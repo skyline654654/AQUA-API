@@ -88,6 +88,12 @@ func (f *fakeUsageLogRepo) Leaderboard(context.Context, model.UsageLogQuery) ([]
 	return nil, nil
 }
 
+// TopActiveUsers 是风控活跃用户统计的桩：转发链路不关心风控，实现空即可。
+// 注释与 Leaderboard 同理——接口演进时桩必须跟上，否则整包编译失败。
+func (f *fakeUsageLogRepo) TopActiveUsers(context.Context, time.Time, int) ([]model.ActiveUserStat, error) {
+	return nil, nil
+}
+
 // waitForUsageLog 轮询等待调用日志写入（写库发生在响应体回传之后，存在极短的时间差）。
 func waitForUsageLog(t *testing.T, logs *fakeUsageLogRepo) *model.UsageLog {
 	t.Helper()

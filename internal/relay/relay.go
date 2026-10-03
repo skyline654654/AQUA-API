@@ -104,6 +104,12 @@ type Options struct {
 	Corpus *corpus.Guard
 	// CorpusSamples 是语料样本仓储；与 Corpus 同时为 nil 时才彻底关闭采集。
 	CorpusSamples model.CorpusRepository
+	// ChannelHealthSamples 是渠道健康采样仓储（可选）。为 nil 时不采样，
+	// 动态权重功能自动失效（后台任务读不到桶就不调权重）。
+	ChannelHealthSamples model.ChannelHealthSampleRepository
+	// UserKeys 是用户自备密钥仓储（可选）。为 nil 时完全禁用 BYOK——
+	// 即使用户在门户配了密钥也不会被选路命中（该部署未启用此能力）。
+	UserKeys model.UserKeyRepository
 }
 
 // Relay 是转发引擎，持有渠道仓储与上游 HTTP 客户端。
@@ -131,6 +137,10 @@ type Relay struct {
 	corpus *corpus.Guard
 	// corpusSamples 是语料样本仓储（可选）。为 nil 时不落样本。
 	corpusSamples model.CorpusRepository
+	// channelHealthSamples 是渠道健康采样仓储（可选）。为 nil 时不做采样。
+	channelHealthSamples model.ChannelHealthSampleRepository
+	// userKeys 是用户自备密钥仓储（可选）。为 nil 时不启用 BYOK 选路。
+	userKeys model.UserKeyRepository
 }
 
 // New 创建转发引擎。
@@ -187,6 +197,10 @@ func New(channels model.ChannelRepository, opts Options) *Relay {
 		mappingCache:    mappingCache,
 		corpus:          opts.Corpus,
 		corpusSamples:   opts.CorpusSamples,
+		// 渠道健康采样：动态权重的输入端。为 nil 时不做任何采样（零开销）。
+		channelHealthSamples: opts.ChannelHealthSamples,
+		// BYOK：用户自备密钥。为 nil 时不启用该能力。
+		userKeys: opts.UserKeys,
 		client: &http.Client{
 			Transport: &http.Transport{
 				// 走系统代理环境变量：便于在受限网络中经代理访问上游
@@ -249,6 +263,22 @@ func (r *Relay) listCandidates(ctx context.Context, group, modelName string) ([]
 		if len(ch.Models) == 0 || ch.HasModel(modelName) {
 			eligible = append(eligible, ch)
 		}
+	}
+
+	// BYOK：若该用户配置了自备密钥且允许调用本模型，把它插到候选集【首位】。
+	//
+	// 为什么放首位而不是末尾：用户既然主动配了"用我自己的额度"，
+	// 就是表达了"优先用它"的意愿。若排在公共渠道之后，站点渠道一旦可用
+	// 就永远不会轮到自备密钥——那等于让这个功能形同虚设。
+	//
+	// 放在这里（而不是鉴权阶段）是因为"该模型是否允许用自备 Key"
+	// 依赖模型名，而模型名要到解析请求体之后才知道。
+	//
+	// 注意：虚拟渠道 Priority 为 0，而真实渠道通常 ≥ 0；
+	// 因此这里【直接前置】整个切片，而不是靠 Priority 让pickCandidate 排序——
+	// 那样会与真实渠道的优先级语义纠缠（真实渠道之间 Priority 才有可比性）。
+	if byokCh := r.byokVirtualChannel(ctx, modelName); byokCh != nil {
+		eligible = append([]*model.Channel{byokCh}, eligible...)
 	}
 	return eligible, nil
 }

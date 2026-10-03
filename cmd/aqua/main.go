@@ -97,6 +97,25 @@ const trialReclaimInterval = 2 * time.Minute
 // 检查间隔明显小于窗口才不会被同一批数据反复判定；而过密只会空转查询。
 const channelHealthInterval = 5 * time.Minute
 
+// abuseScanInterval 是后台周期扫描「异常用量」（盗 Key 检测）的间隔。
+//
+// 取 10 分钟的理由：突发检测的输入是逐小时桶，而突发状态通常会持续数小时，
+// 10 分钟的扫描密度足以在用户察觉前发现，又不会把风控查询打成常态负载。
+// 首轮不额外延迟：检测逻辑只读且有冷却，重复执行不会产生重复事件。
+const abuseScanInterval = 10 * time.Minute
+
+// quotaAlertInterval 是后台周期预测额度耗尽并邮件预警的间隔。
+//
+// 取 6 小时的理由：预警本身有 6~12 小时的冷却窗口，
+// 扫得比冷却窗口更密只是空转；6 小时让"最晚一班扫描"与"紧急预警冷却结束"基本对齐。
+const quotaAlertInterval = 6 * time.Hour
+
+// dynamicWeightInterval 是后台周期按渠道健康度动态调节权重的间隔。
+//
+// 取 10 分钟的理由：采样桶是 5 分钟，取两倍桶长可保证每轮至少读到 1 个新封口桶，
+// 又不会在桶还没写完时就去读（那会读到偏高成功率的不完整数据）。
+const dynamicWeightInterval = 10 * time.Minute
+
 func main() {
 	// 用 run() 承载全部逻辑并统一处理退出码：
 	// 既便于集中做 defer 收尾，也便于将来对 run 做集成测试。
@@ -239,6 +258,17 @@ func run() error {
 	// 语料判定组件：把"采哪些模型""谁免计费"做成内存快照，
 	// 让转发热点路径上零数据库查询（与本项目敏感词过滤器同一套做法）。
 	corpusGuard := corpus.NewGuard(corpusRepo)
+
+	// ── 智能运营仓储（成本归因 / 滥用检测 / 动态权重 / 用量预警 / BYOK）────
+	//
+	// 五者共享usage_logs 这一数据源但关注点不同，故各自独立装配。
+	// userKeys 复用 cipher：BYOK 的凭据与渠道密钥同属"长期账号级凭据"，
+	// 安全要求完全一致（明文绝不入库），不重复引入加密实现。
+	userKeys := store.NewUserKeyRepository(st.DB(), cipher)
+	costs := store.NewCostRepository(st.DB())
+	abuse := store.NewAbuseRepository(st.DB())
+	alerts := store.NewAlertRepository(st.DB())
+	channelHealthSamples := store.NewChannelHealthSampleRepository(st.DB())
 
 	// 启动时清理过期会话：会话表随登录次数持续增长，不清理会无限膨胀。
 	// 清理失败不阻断启动（这只是维护动作，不影响核心功能）。
@@ -439,6 +469,10 @@ func run() error {
 		// 语料共建：判定组件 + 样本仓储（同时非 nil 才启用原文采集）
 		Corpus:        corpusGuard,
 		CorpusSamples: corpusRepo,
+		// 渠道健康采样：动态权重的输入端（每条调用顺手累加进 5 分钟桶）
+		ChannelHealthSamples: channelHealthSamples,
+		// 用户自备密钥（BYOK）：命中时用用户自己的凭据转发，且不扣站内额度
+		UserKeys: userKeys,
 	})
 
 	// 语料共建快照的后台刷新：启动加载一次，之后每 30 秒刷新。
@@ -501,6 +535,12 @@ func run() error {
 		// 语料共建：后台清单/福利/样本/导出接口所需的仓储与判定组件
 		Corpus:        corpusGuard,
 		CorpusSamples: corpusRepo,
+		// 智能运营：成本归因 / 滥用检测 / 动态权重 / 用量预警 / 用户自备密钥
+		UserKeys:              userKeys,
+		Costs:                 costs,
+		Abuse:                 abuse,
+		Alerts:                alerts,
+		ChannelHealthSamples:  channelHealthSamples,
 		// 前端构建产物（web/dist）已通过根包的 go:embed 嵌入二进制
 		WebFS: aqua.WebDist,
 	})
@@ -512,6 +552,20 @@ func run() error {
 	// 默认关闭（AQUA_CHANNEL_AUTO_DISABLE_MIN_REQUESTS=0）——刻意不设正数默认值，
 	// 避免升级后低峰期的正常抖动把渠道误停。站长开启后本协程才真正生效。
 	go runChannelHealthWatcher(ctx, srv, logger)
+
+	// 后台周期扫描异常用量（盗 Key 检测）：把"请求量相对自身历史异常突增"
+	// 的用户与令牌留痕到 abuse_events，供后台查看。
+	//
+	// 与渠道健康检查一样只观察不处置——自动限流的误伤代价远大于多记一条事件。
+	go runAbuseScanner(ctx, srv, logger)
+
+	// 后台周期预测额度耗尽时间并邮件预警到用户注册邮箱。
+	// 未配置邮件通道时该协程自动空转（见 ScanQuotaAlerts 的说明）。
+	go runQuotaAlertScanner(ctx, srv, logger)
+
+	// 后台周期按渠道真实表现动态调节权重（EWMA）。
+	// 默认关闭（settings 的 channel.dynamic_weight=1 才启用），未启用时每轮空转。
+	go runDynamicWeightTuner(ctx, srv, logger)
 
 	// 续发上次进程退出时未完成的邮件群发（串行，不并发开多条 SMTP 连接）。
 	// 已发过的收件人在明细表里是 sent，不会被再取到——重启导致的重复投递由数据保证不会发生。
@@ -628,8 +682,70 @@ func runChannelHealthWatcher(ctx context.Context, srv *server.Server, logger *sl
 	}
 }
 
-// setupLogger 依据配置构造结构化日志器。
+// runAbuseScanner 周期扫描异常用量（盗 Key / 突发流量检测）。
 //
+// 行为约定（与其它后台协程一致）：
+//   - 随 ctx 取消（进程退出信号）立即返回，不阻塞关闭；
+//   - 只观察不处置：命中时落一条 abuse_events 并打Warn 日志，
+//     绝不自动限流用户的令牌——误伤正常业务的代价远高于多记一条事件；
+//   - 单轮失败只打日志，绝不 panic、不退出进程——风控能力的故障不该拖垮主服务。
+func runAbuseScanner(ctx context.Context, srv *server.Server, logger *slog.Logger) {
+	ticker := time.NewTicker(abuseScanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		srv.ScanAbuseEvents(ctx)
+	}
+}
+
+// runQuotaAlertScanner 周期预测用户额度耗尽时间并邮件预警。
+//
+// 行为约定（与其它后台协程一致）：
+//   - 随 ctx 取消立即返回，不阻塞关闭；
+//   - 未配置邮件通道时自动空转（不产生日志噪音）；
+//   - 发信失败保留记录（delivered=0），下轮冷却结束后自动重试；
+//   - 单个用户失败只跳过该用户，绝不 panic、不退出进程。
+func runQuotaAlertScanner(ctx context.Context, srv *server.Server, logger *slog.Logger) {
+	ticker := time.NewTicker(quotaAlertInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		srv.ScanQuotaAlerts(ctx)
+	}
+}
+
+// runDynamicWeightTuner 周期按渠道健康度动态调节权重（EWMA）。
+//
+// 行为约定（与其它后台协程一致）：
+//   - 随 ctx 取消立即返回，不阻塞关闭；
+//   - 默认关闭（settings 的 channel.dynamic_weight=1 才启用），未启用时空转；
+//   - 单轮失败只打日志，绝不 panic、不退出进程——
+//     调度能力的故障不该拖垮主服务。
+func runDynamicWeightTuner(ctx context.Context, srv *server.Server, logger *slog.Logger) {
+	ticker := time.NewTicker(dynamicWeightInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		srv.TuneChannelWeights(ctx)
+	}
+}
+
+// setupLogger 依据配置构造结构化日志器。//
 // 设计说明：
 //   - 使用标准库 log/slog，不引入第三方日志库（可审计、无额外依赖）；
 //   - 输出到 stdout：容器与 systemd 环境下由运行时负责收集；

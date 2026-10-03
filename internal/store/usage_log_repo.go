@@ -44,7 +44,7 @@ const defaultSeriesDays = 7
 // usageLogColumns 集中定义查询列，顺序必须与 scanUsageLog 的扫描顺序严格一致。
 const usageLogColumns = `id, user_id, token_id, channel_id, channel_key_id, model, upstream_model, prompt_tokens, completion_tokens,
 	total_tokens, cached_tokens, reasoning_tokens, first_token_ms, tokens_per_second,
-	quota, latency_ms, is_stream, status_code, error, request_id, price_version, created_at`
+	quota, latency_ms, is_stream, status_code, error, request_id, price_version, tag, created_at`
 
 // usageLogRepository 是 model.UsageLogRepository 的 SQL 实现，并发安全。
 type usageLogRepository struct {
@@ -72,13 +72,13 @@ func (r *usageLogRepository) Create(ctx context.Context, log *model.UsageLog) er
 		INSERT INTO usage_logs
 			(user_id, token_id, channel_id, channel_key_id, model, upstream_model, prompt_tokens, completion_tokens, total_tokens,
 			 cached_tokens, reasoning_tokens, first_token_ms, tokens_per_second,
-			 quota, latency_ms, is_stream, status_code, error, request_id, price_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 quota, latency_ms, is_stream, status_code, error, request_id, price_version, tag, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.UserID, log.TokenID, log.ChannelID, log.ChannelKeyID, log.Model, log.UpstreamModel,
 		log.PromptTokens, log.CompletionTokens, log.TotalTokens,
 		log.CachedTokens, log.ReasoningTokens, log.FirstTokenMS, log.TokensPerSecond,
 		log.Quota, log.LatencyMS, boolToInt(log.IsStream), log.StatusCode,
-		log.Error, log.RequestID, log.PriceVersion, log.CreatedAt.Unix(),
+		log.Error, log.RequestID, log.PriceVersion, model.NormalizeTag(log.Tag), log.CreatedAt.Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: 写入调用日志失败: %w", err)
@@ -265,7 +265,9 @@ func (r *usageLogRepository) TopModels(ctx context.Context, q model.UsageLogQuer
 	}
 
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT model, COUNT(1), COALESCE(SUM(total_tokens), 0)
+	// 额度一列是必需的：请求数与 token 数都无法回答"哪个模型最烧钱"，
+	// 额度是唯一直接对应"钱"的量（见 model.ModelUsage.Quota 的说明）。
+	sb.WriteString(`SELECT model, COUNT(1), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(quota), 0)
 		FROM usage_logs`)
 	if where != "" {
 		sb.WriteString(" WHERE " + where)
@@ -283,7 +285,7 @@ func (r *usageLogRepository) TopModels(ctx context.Context, q model.UsageLogQuer
 	result := make([]model.ModelUsage, 0, limit)
 	for rows.Next() {
 		var item model.ModelUsage
-		if err := rows.Scan(&item.Model, &item.Requests, &item.Tokens); err != nil {
+		if err := rows.Scan(&item.Model, &item.Requests, &item.Tokens, &item.Quota); err != nil {
 			return nil, fmt.Errorf("store: 读取模型排行失败: %w", err)
 		}
 		result = append(result, item)
@@ -636,6 +638,42 @@ func truncateToDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// TopActiveUsers 返回窗口内调用最频繁的前 N 个用户（风控扫描用）。
+//
+// 口径说明见model.ActiveUserStat：失败请求也计入，因为盗刷者产生的
+// 大多是失败请求，只看成功会让"疯狂试错"完全不可见。
+func (r *usageLogRepository) TopActiveUsers(ctx context.Context, since time.Time, limit int) ([]model.ActiveUserStat, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT user_id,
+		       COUNT(1),
+		       COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0)
+		FROM usage_logs
+		WHERE user_id > 0 AND created_at >= ?
+		GROUP BY user_id
+		ORDER BY COUNT(1) DESC, user_id ASC
+		LIMIT ?`, since.Unix(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查询活跃用户失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]model.ActiveUserStat, 0, limit)
+	for rows.Next() {
+		var item model.ActiveUserStat
+		if err := rows.Scan(&item.UserID, &item.Requests, &item.Success); err != nil {
+			return nil, fmt.Errorf("store: 读取活跃用户统计失败: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历活跃用户统计失败: %w", err)
+	}
+	return result, nil
+}
+
 // scanUsageLog 把一行数据映射为日志对象。
 func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 	var (
@@ -660,6 +698,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		errMsg           string
 		requestID        string
 		priceVersion     string
+		tag              string
 		createdAt        int64
 	)
 
@@ -667,7 +706,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		&promptTokens, &completionTokens, &totalTokens,
 		&cachedTokens, &reasoningTokens, &firstTokenMS, &tokensPerSecond,
 		&quota, &latencyMS,
-		&isStream, &statusCode, &errMsg, &requestID, &priceVersion, &createdAt); err != nil {
+		&isStream, &statusCode, &errMsg, &requestID, &priceVersion, &tag, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -696,6 +735,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		Error:            errMsg,
 		RequestID:        requestID,
 		PriceVersion:     priceVersion,
+		Tag:              tag,
 		CreatedAt:        time.Unix(createdAt, 0),
 	}, nil
 }

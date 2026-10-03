@@ -101,7 +101,18 @@ type UsageLog struct {
 	// "这条账走的是哪一版价格"，为"改价后旧账仍可按旧价复算"提供锚点。
 	// 空串表示未采集（历史数据，或写入方尚未接线）。
 	PriceVersion string
-	CreatedAt    time.Time // 记录时间
+	// Tag 是调用场景标签（迁移 0050），由客户端经 HTTP 头 X-Aqua-Tag 传入。
+	//
+	// 为什么需要它：站长最需要的不是"用户花了多少"，而是"钱花在哪"——
+	// 是 Playground 试玩、是某个插件、还是某个脚本在刷。
+	// 令牌维度能回答"哪把 Key 花的"，但同一把 Key 往往被多个场景复用，
+	// 按令牌切分仍回答不了"哪个场景"；标签是对令牌维度的正交补充。
+	//
+	// 取值必经NormalizeTag 归一（去空白 / 截断 32 字节 / 空值归 untagged），
+	// 保证聚合时同一场景不会因为写法差异被拆成多行。
+	// 站内游乐场由服务端强制注入 model.TagPlayground，客户端无法伪造。
+	Tag string
+	CreatedAt time.Time // 记录时间
 }
 
 // Validate 校验日志的必要字段。
@@ -235,6 +246,12 @@ type ModelUsage struct {
 	Model    string // 模型名
 	Requests int64  // 请求数
 	Tokens   int64  // token 数
+	// Quota 是该模型的消耗额度合计。
+	//
+	// 为什么必需：请求数与 token 数都无法回答"哪个模型最烧钱"——
+	// 一个 1 万 token 的回答可能比 100 次短回答更贵，而两者请求数/token 数
+	// 的排序会给出相反的结论。额度是唯一直接对应"钱"的量。
+	Quota int64
 }
 
 // LeaderboardEntry 是「用量排行榜」中的一行：某个用户在统计窗口内的综合用量。
@@ -441,6 +458,29 @@ type UsageLogRepository interface {
 	// 供调用方一次性分完两个榜单，避免"付费榜要前 20、免费榜也要前 20"
 	// 这种需求拆成两次全量查询）。
 	Leaderboard(ctx context.Context, q UsageLogQuery) ([]LeaderboardEntry, error)
+
+	// TopActiveUsers 返回窗口内调用最频繁的前 N 个用户 ID（按请求数降序）。
+	//
+	// 用途：盗Key / 滥用检测的扫描范围。
+	// 为什么从日志侧找活跃用户而不是从 users 表：只有"真的在调用"的用户
+	// 才需要风控扫描，而用户表里有大量注册后从未调用、也可能永远不再调用的账号。
+	// 反过来做（从 users 表遍历再逐个查日志）在大站上会退化成N+1 全表扫。
+	//
+	// 口径：只统计 user_id > 0 的行（系统调用无账号可归属），
+	// 失败请求也计入——盗刷者产生的大多是失败请求，
+	// 只看成功请求会让"疯狂试错"这类行为完全不可见。
+	TopActiveUsers(ctx context.Context, since time.Time, limit int) ([]ActiveUserStat, error)
+}
+
+// ActiveUserStat 是风控扫描用的用户活跃度快照。
+type ActiveUserStat struct {
+	UserID   uint64
+	Requests int64
+	// Success 是其中的成功请求数。
+	//
+	// 失败占比本身就是重要信号：正常用户偶有失败，
+	// 而"拿着被盗Key 乱试"的失败率会异常高。
+	Success int64
 }
 
 // ChannelKeyUsage 是一把密钥在某个模型上的用量汇总（密钥余额核算的输入）。

@@ -154,6 +154,26 @@ type Deps struct {
 	// 由 relay.Options 单独注入，与本字段无关。
 	Corpus        *corpus.Guard
 	CorpusSamples model.CorpusRepository
+
+	// ── 智能运营（成本归因 / 滥用检测 / 动态权重 / 用量预警 / BYOK）──────────
+	//
+	// 这五个能力共享同一个数据源（usage_logs），但关注点不同，故拆成五个仓储。
+	// 全部允许为 nil：缺失时对应接口返回 503 而不是 panic——
+	// 运营智能属于增值能力，不该拖垮网关主链路。
+
+	// UserKeys 是用户自备密钥（BYOK）仓储。
+	//
+	// 它与 Channels 的区别是【归属】：渠道是站点资产，而这里的凭据属于用户。
+	// 选路时按 (user_id, provider) 命中，调用仍记usage_logs 以保留审计。
+	UserKeys model.UserKeyRepository
+	// Costs 是成本归因聚合仓储（按场景标签切分用量）。
+	Costs model.CostRepository
+	// Abuse 是异常用量事件仓储（盗 Key / 突发流量检测的留痕）。
+	Abuse model.AbuseRepository
+	// Alerts 是预警记录仓储（含量预测邮件的冷却去重）。
+	Alerts model.AlertRepository
+	// ChannelHealthSamples 是渠道健康采样仓储（动态权重的 EWMA 输入）。
+	ChannelHealthSamples model.ChannelHealthSampleRepository
 }
 
 // Server 是 HTTP 服务的运行时载体。

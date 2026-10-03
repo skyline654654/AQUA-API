@@ -171,8 +171,25 @@ func (s *Server) registerRoutes() {
 	portal.GET("/leaderboard", s.handleLeaderboard)
 	// 模型实时指标（tokens/s / 平均耗时 / TTFB）：模型详情页使用
 	portal.GET("/models/:model/stats", s.handleModelStats)
+	// 模型推荐：基于用户自己的使用历史推荐"该用哪个模型"（含推荐理由）。
+	//
+	// 路径刻意放在 /recommend/models 而非 /models/recommend：
+	// 上一行已注册了 /models/:model/stats，再加 /models/recommend 会让
+	// 静态段 "recommend" 与通配段 ":model" 争同一层路由树位置
+	// （gin 基于 httprouter，同层混用静态与通配会 panic）。
+	portal.GET("/recommend/models", s.handleRecommendModels)
 	// 异步任务（用户只能看自己的）
 	portal.GET("/tasks", s.handleMyListTasks)
+
+	// ── 用户自备密钥（BYOK）────────────────────────────────────────
+	//
+	// 凭据归属用户、加密托管，调用仍走本网关的统一协议与审计。
+	// 归属由会话强制（处理器内带 user_id 条件），响应只回显掩码。
+	portal.GET("/key-providers", s.handleMyKeyProviders)
+	portal.GET("/keys", s.handleMyListKeys)
+	portal.POST("/keys", s.handleMyCreateKey)
+	portal.PATCH("/keys/:id", s.handleMyUpdateKey)
+	portal.DELETE("/keys/:id", s.handleMyDeleteKey)
 
 	// ── 充值（用户自己的订单）────────────────────────────────────
 	portal.POST("/orders", s.handleCreateOrder)
@@ -191,6 +208,12 @@ func (s *Server) registerRoutes() {
 	// 财务记录：把钱相关的四个数字（余额/累计充值/累计返利/累计消费）一次给全，
 	// 明细列表复用上面的订单 / 返利明细 / 调用日志接口。
 	portal.GET("/finance", s.handleFinanceSummary)
+
+	// 成本归因：按场景标签切分用量，回答"钱花在哪"（?days=30 可调窗口）
+	portal.GET("/cost/attribution", s.handleCostAttribution)
+
+	// 预警中心：用户自查"我收到过哪些预警、为什么"（邮件之外的第二通道）
+	portal.GET("/alerts", s.handleMyAlerts)
 
 	// 限时试用额：当前用户"还剩多少、几时过期"，供概览页横幅展示。
 	portal.GET("/trial", s.handleMyTrialGrant)
@@ -280,6 +303,9 @@ func (s *Server) registerRoutes() {
 	admin.GET("/logs", s.handleAdminListLogs)
 	// 后台操作审计日志（只读查询；写操作由中间件自动记录）
 	admin.GET("/audit-logs", s.handleAdminListAuditLogs)
+
+	// 盗 Key / 滥用事件（只读）：突发请求量等异常用量的留痕
+	admin.GET("/abuse-events", s.handleListAbuseEvents)
 
 	// 站点公告（发布/编辑/删除；列表含停用与已过期）
 	admin.GET("/announcements", s.handleAdminListAnnouncements)
@@ -425,7 +451,10 @@ func (s *Server) registerRoutes() {
 	v1 := r.Group("/v1")
 	// 第三个参数（计费组件）用于"请求前额度预扣"：额度不足直接 429，
 	// 避免并发请求全部通过检查后再各自扣费导致超支。
-	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing))
+	// TokenAuth 第二个 reserver 槽位传Relay：它实现了「按自备密钥免费」的扩展点
+	// （IsFreeViaUserKey），让额度已耗尽但配了 BYOK 的用户仍能通过额度墙。
+	// 未启用 BYOK（Relay.userKeys 为 nil）时该判定恒为 false，行为与从前一致。
+	v1.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing, s.deps.Relay))
 	// 分组 RPM 限流：按"本次请求所属分组"做固定 1 分钟窗口计数（见 middleware.GroupRPMLimiter）。
 	//
 	// 挂在 TokenAuth 之后：分组来自 TokenAuth 写入 request context 的值。
@@ -438,6 +467,12 @@ func (s *Server) registerRoutes() {
 	if groupRPM != nil {
 		v1.Use(groupRPM)
 	}
+	// 调用场景标签：客户端经X-Aqua-Tag 声明"这次调用用在哪"，
+	// 供成本归因按场景切分用量（"钱花在哪"）。
+	//
+	// 放在鉴权之后、敏感词过滤之前：标签只用于统计，早读早归一，
+	// 但没有必要让它参与鉴权路径（鉴权失败不会有日志落库，标签也就白解析了）。
+	v1.Use(middleware.CaptureTag())
 	// 内容合规过滤：在【鉴权之后、转发之前】扫描请求正文，命中敏感词即拒绝。
 	//
 	// 放在鉴权之后的原因：过滤本身要读完整请求体，未鉴权的请求没必要为其付出这个成本；
@@ -481,7 +516,7 @@ func (s *Server) registerRoutes() {
 	// （/v1beta/models/{model}:generateContent 与 :streamGenerateContent），
 	// 因此用通配段承接，由适配器自行解析路径。
 	gemini := r.Group("/v1beta")
-	gemini.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing))
+	gemini.Use(middleware.TokenAuth(s.deps.Tokens, s.deps.Users, s.deps.Billing, s.deps.Relay))
 	// Gemini 原生协议复用同一个分组 RPM 限流实例（与 /v1 共享计数，避免绕过）。
 	if groupRPM != nil {
 		gemini.Use(groupRPM)

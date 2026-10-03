@@ -391,6 +391,10 @@ func (r *Relay) forwardWithFallback(w http.ResponseWriter, req *http.Request, mo
 	}
 	// lastFailure 记录"最后一次上游失败"，用于所有重试耗尽后写入本站调用日志
 	var lastFailure upstreamFailure
+	// lastAttemptedChannel 记录最后一次实际尝试的渠道（不保证尝试过——候选为空时为 nil）。
+	// BYOK 失败回写需要它：重试可能换过多个渠道，
+	// 但只有"真正被打过"的那把用户 Key 才该累加失败计数。
+	var lastAttemptedChannel *model.Channel
 retryLoop:
 	for keyAttempts := 1; keyAttempts <= maxKeyLevelAttempts; keyAttempts++ {
 		ch := pickCandidate(candidates, excludedChannels)
@@ -398,6 +402,7 @@ retryLoop:
 			// 候选渠道已全部放弃，退出循环统一报错
 			break
 		}
+		lastAttemptedChannel = ch
 
 		cred, ok, hasSpareKey := r.resolveChatCredential(keyCtx, ch, usedKeys,
 			credentialScope{Group: group, Model: modelName})
@@ -434,6 +439,13 @@ retryLoop:
 		// 归还本轮的在途占用：无论成功、换密钥还是换渠道，都必须释放，
 		// 否则 in_flight 只增不减，least_in_flight 会逐步失去参考价值。
 		r.releaseKey(target.keyID)
+		// BYOK 成功回写：清零该用户 Key 的失败计数与熔断状态。
+		// 放在这里（而非forwardChat 内）是因为 forwardChat 只知道"响应了"，
+		// 而重试耗尽后的最终失败也走不到那个分支——统一在重试循环出口处理，
+		// 语义才是"本次请求最终成功/最终失败"。
+		if outcome == forwardResponded {
+			r.markUserKeySuccess(keyCtx, ch)
+		}
 		switch outcome {
 		case forwardResponded:
 			return
@@ -451,6 +463,14 @@ retryLoop:
 		}
 	}
 
+	// 所有重试都用尽：BYOK 失败回写（累加失败次数，达阈值熔断）。
+	//
+	// 为什么"用尽后才记"而不是每次失败都记：用户 Key 的失败多数是
+	// 端点偶发问题（网络抖动、区域路由），立刻熔断会误伤好 Key；
+	// 只有连续失败到"用尽"才说明这把 Key 真的有问题。
+	// 与公共渠道的密钥池用同一套退避规则，用户无需理解两套机制。
+	r.markUserKeyFailure(keyCtx, lastAttemptedChannel)
+
 	// 所有尝试都用尽：把上游最后一次失败的原因写进本站日志，并向客户端回本站定制错误。
 	//
 	// 为什么不再透传上游原始响应：上游错误体里含上游厂商名、账号标识与原始错误码，
@@ -461,13 +481,17 @@ retryLoop:
 		message := extractUpstreamErrorMessage(lastFailure.body)
 
 		r.recordUsage(req.Context(), usageEntry{
-			UserID:     identityFromRequest(req.Context()).UserID,
-			TokenID:    identityFromRequest(req.Context()).TokenID,
-			Group:      group,
-			Model:      modelName,
-			IsStream:   oai.PeekStream(body),
-			StatusCode: lastFailure.status,
-			ErrorText:  truncateReason(upstreamErrorLogText(lastFailure.status, message)),
+			UserID:   identityFromRequest(req.Context()).UserID,
+			TokenID:  identityFromRequest(req.Context()).TokenID,
+			Group:    group,
+			Model:    modelName,
+			IsStream: oai.PeekStream(body),
+			// BYOK 失败同样要退还站内预留：用户没拿到服务就不该被扣钱。
+			// （即便漏了这条，settleQuota 的"失败即全额退还"分支也会兜住；
+			//  显式带上是为了让"这次走的是 BYOK"在日志里可见。）
+			ByOKUserKeyID: byokUserKeyID(lastAttemptedChannel),
+			StatusCode:    lastFailure.status,
+			ErrorText:     truncateReason(upstreamErrorLogText(lastFailure.status, message)),
 		})
 
 		// 无论直通还是转换路径，一律回本站脱敏错误码。
@@ -478,13 +502,15 @@ retryLoop:
 	// 没有任何可透传的上游响应（例如候选渠道为空、全部连不上）：
 	// 记一条日志（channel_id 为 0，因为没有一个渠道成功完成会话）
 	r.recordUsage(req.Context(), usageEntry{
-		UserID:     identityFromRequest(req.Context()).UserID,
-		TokenID:    identityFromRequest(req.Context()).TokenID,
-		Group:      group,
-		Model:      modelName,
-		IsStream:   oai.PeekStream(body),
-		StatusCode: http.StatusBadGateway,
-		ErrorText:  "所有候选渠道均请求失败",
+		UserID:   identityFromRequest(req.Context()).UserID,
+		TokenID:  identityFromRequest(req.Context()).TokenID,
+		Group:    group,
+		Model:    modelName,
+		IsStream: oai.PeekStream(body),
+		// 同上：全部尝试失败时若走的是 BYOK，也不该扣站内额度。
+		ByOKUserKeyID: byokUserKeyID(lastAttemptedChannel),
+		StatusCode:    http.StatusBadGateway,
+		ErrorText:     "所有候选渠道均请求失败",
 	})
 	writeAdaptedError(w, adapter, http.StatusBadGateway, "所有候选渠道均请求失败",
 		oai.TypeServer, oai.CodeUpstreamRequestFailed)
@@ -1177,6 +1203,8 @@ func (r *Relay) forwardChat(w http.ResponseWriter, req *http.Request, target for
 		TokensPerSecond: tokensPerSecond(usage.CompletionTokens, totalMS, firstTokenMS),
 		IsStream:        isStream,
 		StatusCode:      resp.StatusCode,
+		// BYOK 标记：本次用的是用户自备密钥，站内不扣额度（见 settleQuota）。
+		ByOKUserKeyID: byokUserKeyID(ch),
 	}
 	if !hasUsage {
 		// 上游确实没返回 usage：token 只能记 0，但必须留下标注，

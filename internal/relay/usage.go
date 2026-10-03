@@ -463,6 +463,15 @@ type usageEntry struct {
 	IsStream        bool
 	StatusCode      int
 	ErrorText       string
+	// ByOKUserKeyID 是本次调用所用的【用户自备密钥】记录 ID；0 表示非 BYOK 调用。
+	//
+	// 它的唯一作用是让 settleQuota 知道"这次不该扣站内额度"——
+	// 用户已经直接付钱给上游了（NVIDIA 等），再扣站内额度就是双重收费，
+	// 那是会让用户立刻弃用本站的设计。
+	//
+	// 仍然要落 usage_logs：审计、排行榜、成本归因全都依赖这张表，
+	// 而"这次消耗了多少 token"对用户理解自己的用量也有价值。
+	ByOKUserKeyID uint64
 }
 
 // recordUsage 记录调用用量。
@@ -513,6 +522,10 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 		// request_id 是"这一次调用"的唯一标识，也是把调用日志与语料样本对上账的
 		// 唯一依据（此前该列从未被写入，等于死列，一并在此补上）。
 		RequestID: recordRequestID,
+		// tag 是场景标签：由 HTTP 层中间件从 X-Aqua-Tag 头取好放进 context，
+		// 站内游乐场则由服务端强制注入（客户端无法伪造）。
+		// 成本归因按它聚合，回答"钱花在哪"。
+		Tag:       reqctx.Tag(ctx),
 		CreatedAt: time.Now(),
 	}
 	// 计费：优先走"预留 → 结算/退还"（鉴权阶段已预扣），未预留时退化为响应后扣费。
@@ -534,6 +547,14 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 		slog.Warn("写入调用日志失败", "error", err, "model", entry.Model, "channel_id", entry.ChannelID)
 	}
 
+	// 渠道健康采样：把本次调用累加进 (渠道, 5分钟桶)，供动态权重算 EWMA。
+	//
+	// 为什么与日志写入分开而不是合并成一次 SQL：两者的失败语义不同——
+	// 日志丢了是"这次调用没留痕"（可接受，代价是一次审计缺口）；
+	// 采样丢了只是"这一轮 EWMA 少一个样本"（可接受，统计本就有噪声）。
+	// 合成一次写则会让任一失败拖垮另一个，而它们本就可以各自独立重试/忽略。
+	r.sampleChannelHealth(writeCtx, logEntry)
+
 	// 语料共建：把本次请求的原文落库（仅在入口判定命中采集清单时才有缓冲）。
 	r.saveCorpusSample(writeCtx, ctx, entry, recordRequestID)
 
@@ -545,8 +566,37 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 	}
 }
 
-// saveCorpusSample 把本次请求的原文写入语料样本表（语料共建计划）。
+// sampleChannelHealth 把本次调用累加进渠道健康采样桶（动态权重的输入端）。
 //
+// 关键设计：绝不阻塞、绝不影响响应。
+// 它挂在转发后的记录路径上，采样失败只打一条 Warn——
+// 采样是"锦上添花的统计输入"，把它做成影响可用性的依赖是本末倒置。
+//
+// 只统计"命中了渠道"的调用：channel_id=0 说明请求在选渠道前就失败
+// （无可用渠道 / 鉴权失败），这类失败与任何渠道的质量都无关，
+// 计入只会污染该渠道的成功率。
+func (r *Relay) sampleChannelHealth(ctx context.Context, log *model.UsageLog) {
+	if r.channelHealthSamples == nil || log == nil || log.ChannelID == 0 {
+		return
+	}
+	success := int64(0)
+	if log.StatusCode >= http.StatusOK && log.StatusCode < http.StatusBadRequest {
+		success = 1
+	}
+	sample := &model.ChannelSample{
+		ChannelID:    log.ChannelID,
+		BucketStart:  log.CreatedAt.Unix(),
+		Requests:     1,
+		Success:      success,
+		LatencySumMS: int64(log.LatencyMS),
+		Quota:        log.Quota,
+	}
+	if err := r.channelHealthSamples.Accumulate(ctx, sample); err != nil {
+		slog.Warn("累加渠道健康采样失败", "error", err, "channel_id", log.ChannelID)
+	}
+}
+
+// saveCorpusSample 把本次请求的原文写入语料样本表（语料共建计划）。//
 // 前置条件：入口处已判定该模型在采集清单内，并把 Recorder 挂到了请求上下文上。
 // 两条都不满足时直接返回——绝大多数请求走的就是这条零开销路径。
 //
@@ -622,6 +672,29 @@ func identityFromRequest(ctx context.Context) reqctx.Identity {
 // 因为额度错账属于必须被发现的资损风险，不能静默 warn。
 func (r *Relay) settleQuota(ctx context.Context, entry usageEntry) int64 {
 	if r.billing == nil {
+		return 0
+	}
+
+	// BYOK 特例：用户已用自己的额度向上游付费，此处必须【全额退还】站内预扣，
+	// 不能按 token 结算。
+	//
+	// 为什么"退还"而不是"不预留"：预留发生在鉴权阶段，那时还不知道
+	// 这次会走 BYOK（要等解析出模型名、查到用户的自备密钥才知道）。
+	// 因此正确做法是正常预留、到结算时全额退还——
+	// 这样并发下也不会出现"预扣了但没释放"的额度泄漏。
+	if entry.ByOKUserKeyID > 0 {
+		requestID := identityFromRequest(ctx).RequestID
+		if requestID == "" {
+			// 未预留（不计费模型/ 旁路）：本就无需退还。
+			return 0
+		}
+		if err := r.billing.Release(ctx, requestID); err != nil {
+			// 额度错账属于必须被发现的资损风险，必须记 Error 而非 Warn。
+			slog.Error("BYOK 调用退还站内预留额度失败（用户额度可能被误扣，需人工核查）",
+				"error", err, "request_id", requestID,
+				"user_id", entry.UserID, "model", entry.Model,
+				"user_key_id", entry.ByOKUserKeyID)
+		}
 		return 0
 	}
 

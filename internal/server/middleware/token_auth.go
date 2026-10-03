@@ -89,14 +89,72 @@ type QuotaReserver interface {
 // 参数：
 //   - tokens 为令牌仓储；
 //   - users 为用户仓储（用于账号级额度校验），可为 nil（此时跳过该层校验）；
-//   - reservers 为可选的额度预留器（通常传入计费组件）。不传时不做预留，
+//   - deps 为可选的依赖集合，通常传入（计费组件, 转发引擎）。不传时不做预留，
 //     保持"只在响应后扣费"的旧行为——便于测试与"仅统计不限制"的部署形态。
 //
-// 三者都由 main 装配后注入，便于替换实现与单元测试。
-func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reservers ...QuotaReserver) gin.HandlerFunc {
+// 为什么用 ...any 而不是 ...QuotaReserver：这个位置要接纳的依赖本来就不止一类——
+// 计费组件负责额度预留，Relay 负责"该用户能否用自己的凭据"（BYOK）。
+// 二者职责不同，没有共同父接口，强行统一只会造出一个谁都不属于的胖接口。
+// 这里按能力做类型探测（谁实现谁生效），未实现的依赖自然不参与。
+//
+// 全部依赖都由main 装配后注入，便于替换实现与单元测试。
+func TokenAuth(tokens model.TokenRepository, users model.UserRepository, deps ...any) gin.HandlerFunc {
+	// 额度预留器：取第一个实现了 QuotaReserver 的依赖。
 	var reserver QuotaReserver
-	if len(reservers) > 0 {
-		reserver = reservers[0]
+	for _, d := range deps {
+		if r, ok := d.(QuotaReserver); ok {
+			reserver = r
+			break
+		}
+	}
+
+	// 「按人免费」判定器：从 deps 里探测可选扩展点。
+	//
+	// 为什么要单独探测而不是让 reserver 自己实现：目前有两个来源
+	// （计费组件的语料福利账户、Relay 的自备密钥），它们职责不同——
+	// 前者属于计费策略，后者属于路由能力。强行合并会让计费组件
+	// 依赖 user_keys 仓储，破坏分层。
+	//
+	// 多个判定器是【或】关系：任一命中即视为免费。
+	// 逐个 type assertion 收集，未实现者自然跳过（未启用该能力）。
+	var perUserFreeCheckers []interface {
+		IsFreeForUser(userID uint64, model string) bool
+	}
+	for _, r := range deps {
+		if checker, ok := r.(interface {
+			IsFreeForUser(userID uint64, model string) bool
+		}); ok {
+			perUserFreeCheckers = append(perUserFreeCheckers, checker)
+		}
+	}
+	var userKeyFreeCheckers []interface {
+		IsFreeViaUserKey(userID uint64, model string) bool
+	}
+	for _, r := range deps {
+		if checker, ok := r.(interface {
+			IsFreeViaUserKey(userID uint64, model string) bool
+		}); ok {
+			userKeyFreeCheckers = append(userKeyFreeCheckers, checker)
+		}
+	}
+
+	// isPerUserFree 汇总所有「按人免费」判定器（任一命中即为免费）。
+	isPerUserFree := func(userID uint64, modelName string) bool {
+		for _, c := range perUserFreeCheckers {
+			if c.IsFreeForUser(userID, modelName) {
+				return true
+			}
+		}
+		return false
+	}
+	// isFreeViaUserKey 汇总所有 BYOK 判定器。
+	isFreeViaUserKey := func(userID uint64, modelName string) bool {
+		for _, c := range userKeyFreeCheckers {
+			if c.IsFreeViaUserKey(userID, modelName) {
+				return true
+			}
+		}
+		return false
 	}
 
 	return func(c *gin.Context) {
@@ -277,13 +335,23 @@ func TokenAuth(tokens model.TokenRepository, users model.UserRepository, reserve
 		// 为什么必须在这里判：EstimateReserve 的入参里没有用户，
 		// "按人免费"在计费组件内部无从判定；而此处同时拿得到 owner 与 modelName，
 		// 是唯一自然的判定点。判定失败（无此能力）等同于"本站没有福利账户"。
-		if modelPriced && owner != nil && modelName != "" {
-			if checker, ok := reserver.(interface {
-				IsFreeForUser(userID uint64, model string) bool
-			}); ok && checker.IsFreeForUser(owner.ID, modelName) {
-				modelPriced = false
-				reserveAmount = 0
-			}
+		if modelPriced && owner != nil && modelName != "" && isPerUserFree(owner.ID, modelName) {
+			modelPriced = false
+			reserveAmount = 0
+		}
+
+		// BYOK（用户自备密钥）：若该用户为本模型配了可用的自备凭据，本次调用视同免费。
+		//
+		// 为什么必须在这里放行，否则BYOK 形同虚设：
+		// 额度墙是在【鉴权阶段】判定的，而"这次会不会走 BYOK"要到转发时
+		// 解析出模型名、查到用户凭据才知道。若鉴权不放行，额度已耗尽的用户
+		// 会在到达转发层之前就收到 429 —— 而他明明有自己的 NVIDIA 额度可用。
+		// 这正是"自备密钥"最容易踩空的地方：功能配了，却在最外层被拦死。
+		//
+		// 判定失败（未启用 BYOK）时保持原样，不影响任何既有行为。
+		if modelPriced && owner != nil && modelName != "" && isFreeViaUserKey(owner.ID, modelName) {
+			modelPriced = false
+			reserveAmount = 0
 		}
 
 		exemptFromQuota := reserver != nil && modelName != "" && !modelPriced

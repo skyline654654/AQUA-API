@@ -127,3 +127,28 @@ func Locale(ctx context.Context) i18n.Locale {
 	}
 	return locale
 }
+
+// tagKey 是「本次调用的场景标签」在 context 中的键。
+//
+// 沿用带字段的 ctxKey（理由同identityKey / groupKey：空结构体会让多个键互相覆盖）。
+var tagKey = ctxKey{name: "tag"}
+
+// WithTag 返回携带场景标签的 context。
+//
+// 标签是"纯数据"且在一次请求内不变，因此适合走 context 而不必改 relay 的签名。
+func WithTag(ctx context.Context, tag string) context.Context {
+	return context.WithValue(ctx, tagKey, tag)
+}
+
+// Tag 取出本次请求的场景标签；未写入时返回空串。
+//
+// 空串由 model.NormalizeTag 归一为 model.TagUntagged（"未标注"），
+// 之所以在model 层归一而不在这里：写入与读出两侧共用同一套规则，
+// 各写一份必然漂移（一个截断、一个不截断，归因就对不上账）。
+func Tag(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	tag, _ := ctx.Value(tagKey).(string)
+	return tag
+}
