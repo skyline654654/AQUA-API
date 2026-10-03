@@ -32,10 +32,17 @@ func main() {
 	raised[4].Tokens = 100000
 	show("erin.token 20,000 → 100,000", raised, score.DefaultConfig)
 
-	// ── 3) 自定义配置：把上锚点锚在最大值（P100）、下锚点取最小值（P0） ──
-	show("pTop=1.0, pBase=0.0", entries, score.Config{
-		TopPercent: 1.0, BasePct: 0.0, SetBasePct: true,
-	})
+	// ── 3) 真实生产数据（用户 2026-10-03 榜单截图）──────────────────
+	show("真实付费榜", []score.Entry{
+		{ID: "Alistair_MioFog", Tokens: 111454718, Requests: 1661},
+		{ID: "huan102916tcuyi", Tokens: 92891, Requests: 114},
+		{ID: "FaiaMorgana", Tokens: 0, Requests: 126},
+		{ID: "易123", Tokens: 16462, Requests: 27},
+		{ID: "ssq350624", Tokens: 47834515, Requests: 362},
+		{ID: "xiaomiao", Tokens: 1388367, Requests: 577},
+		{ID: "skyline117", Tokens: 990097957, Requests: 2383},
+		{ID: "Tauru", Tokens: 14546749, Requests: 4293},
+	}, score.DefaultConfig)
 }
 
 func show(title string, entries []score.Entry, cfg score.Config) {
