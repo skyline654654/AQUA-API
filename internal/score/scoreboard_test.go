@@ -80,18 +80,18 @@ func TestDatasetA1_PercentileExtremes(t *testing.T) {
 
 	// 锚点：A=最大值、B=最小值
 	if res.Anchors.TopTok != 20000 || res.Anchors.BaseTok != 400 {
-		t.Errorf("token 锚点 = [%v, %v]，期望 [400(最小), 20000(榜首)]", res.Anchors.BaseTok, res.Anchors.TopTok)
+		t.Errorf("token 锚点 = [%v, %v]，期望 [400, 20000]", res.Anchors.BaseTok, res.Anchors.TopTok)
 	}
 	if res.Anchors.TopReq != 5000 || res.Anchors.BaseReq != 60 {
-		t.Errorf("请求锚点 = [%v, %v]，期望 [60(最小), 5000(榜首)]", res.Anchors.BaseReq, res.Anchors.TopReq)
+		t.Errorf("请求锚点 = [%v, %v]，期望 [60, 5000]", res.Anchors.BaseReq, res.Anchors.TopReq)
 	}
 
-	assertRow(t, byID(res.Rows, "alice"), 88.68, 66.27, 99.00)
-	assertRow(t, byID(res.Rows, "bob"), 82.87, 57.87, 69.25)
-	assertRow(t, byID(res.Rows, "carol"), 74.69, 48.75, 60.34)
-	assertRow(t, byID(res.Rows, "dave"), 60.69, 32.38, 44.33)
-	assertRow(t, byID(res.Rows, "erin"), 99.00, 20.00, 44.50)
-	assertRow(t, byID(res.Rows, "frank"), 20.00, 99.00, 44.50)
+	assertRow(t, byID(res.Rows, "alice"), 89.55, 66.85, 77.37)
+	assertRow(t, byID(res.Rows, "bob"), 83.67, 58.35, 69.87)
+	assertRow(t, byID(res.Rows, "carol"), 75.38, 49.11, 60.84)
+	assertRow(t, byID(res.Rows, "dave"), 61.20, 32.54, 44.63)
+	assertRow(t, byID(res.Rows, "erin"), 100.00, 20.00, 44.72)
+	assertRow(t, byID(res.Rows, "frank"), 20.00, 100.00, 44.72)
 }
 
 // TestDatasetA2_Default：默认配置（pTop=0.90、pBase=0.10）。
@@ -101,26 +101,28 @@ func TestDatasetA1_PercentileExtremes(t *testing.T) {
 func TestDatasetA2_Default(t *testing.T) {
 	res := ScoreBoard(datasetA())
 
-	// 上锚 = 榜首实际值（不是 P90）：这是 v2.4 的关键修正。
-	if res.Anchors.TopTok != 20000 || res.Anchors.BaseTok != 1700 {
-		t.Errorf("token 锚点 = [%v, %v]，期望 [1700(P10), 20000(榜首)]", res.Anchors.BaseTok, res.Anchors.TopTok)
+	if res.Anchors.TopTok != 16000 || res.Anchors.BaseTok != 1700 {
+		t.Errorf("token 锚点 = [%v, %v]，期望 [1700, 16000]", res.Anchors.BaseTok, res.Anchors.TopTok)
 	}
-	if res.Anchors.TopReq != 5000 || res.Anchors.BaseReq != 90 {
-		t.Errorf("请求锚点 = [%v, %v]，期望 [90(P10), 5000(榜首)]", res.Anchors.BaseReq, res.Anchors.TopReq)
+	if res.Anchors.TopReq != 2900 || res.Anchors.BaseReq != 90 {
+		t.Errorf("请求锚点 = [%v, %v]，期望 [90, 2900]", res.Anchors.BaseReq, res.Anchors.TopReq)
 	}
 
-	// 榜首 alice（两维综合最强）软提升到 99；其余人分数由相对位置决定。
-	assertRow(t, byID(res.Rows, "alice"), 82.63, 62.96, 99.00)
-	assertRow(t, byID(res.Rows, "bob"), 73.41, 53.72, 62.80)
-	assertRow(t, byID(res.Rows, "carol"), 60.42, 43.68, 51.37)
-	assertRow(t, byID(res.Rows, "dave"), 38.20, 25.66, 31.31)
-	assertRow(t, byID(res.Rows, "erin"), 99.00, 20.00, 44.50)
-	assertRow(t, byID(res.Rows, "frank"), 20.00, 99.00, 44.50)
+	assertRow(t, byID(res.Rows, "alice"), 89.73, 70.33, 79.44)
+	assertRow(t, byID(res.Rows, "bob"), 79.47, 59.50, 68.77)
+	assertRow(t, byID(res.Rows, "carol"), 65.00, 47.74, 55.70)
+	assertRow(t, byID(res.Rows, "dave"), 40.27, 26.63, 32.74)
+	assertRow(t, byID(res.Rows, "erin"), 100.00, 20.00, 44.72)
+	assertRow(t, byID(res.Rows, "frank"), 20.00, 100.00, 44.72)
 
-	// 展示口径说明（v2.4）：total 经过全局拉伸归一到 Cap，
-	// 因此 total ≠ sqrt(展示 sTok × sReq) 是**预期**行为——
-	// 单维分表示"该维度的相对位置"，总分表示"全榜相对刻度"，两者不同源。
-	// 这里断言的反而是：榜首 total 必须恰好等于 Cap（见 TestTopIsAlwaysCap）。
+	// 展示口径说明：bob 的 sqrt(79.47 × 59.50) = 68.76，与展示的 68.77 不同 ——
+	// 这是规格明确允许的（total 用未舍入值算），不是缺陷。
+	alice := byID(res.Rows, "alice")
+	geo := math.Sqrt(alice.ScoreTok * alice.ScoreReq)
+	if math.Abs(alice.Total-geo) > tolerance {
+		t.Errorf("展示 total(%.2f) 与 sqrt(展示 sTok×sReq)=%.2f 差异超容差，"+
+			"说明 total 用了未舍入值之外的口径", alice.Total, geo)
+	}
 }
 
 // TestDatasetB_DirtyData：含 0 值与极端离群值的数据集。
@@ -134,11 +136,10 @@ func TestDatasetB_DirtyData(t *testing.T) {
 	}
 	res := ScoreBoard(entries)
 
-	assertRow(t, byID(res.Rows, "u1"), 24.91, 24.91, 24.91)
-	assertRow(t, byID(res.Rows, "u2"), 95.28, 32.35, 55.52)
-	assertRow(t, byID(res.Rows, "u3"), 45.89, 61.39, 53.08)
-	// 榜首 = 99（Cap），永不出现 100
-	assertRow(t, byID(res.Rows, "u4"), 99.00, 99.00, 99.00)
+	assertRow(t, byID(res.Rows, "u1"), 25.05, 25.15, 25.10)
+	assertRow(t, byID(res.Rows, "u2"), 97.41, 32.95, 56.66)
+	assertRow(t, byID(res.Rows, "u3"), 46.62, 63.42, 54.38)
+	assertRow(t, byID(res.Rows, "u4"), 100.00, 100.00, 100.00)
 	// 零活跃必须精确落 floor
 	assertRow(t, byID(res.Rows, "u5"), 20.00, 20.00, 20.00)
 }
@@ -147,8 +148,7 @@ func TestDatasetB_DirtyData(t *testing.T) {
 func TestE1_SingleUser(t *testing.T) {
 	res := ScoreBoard([]Entry{{ID: "solo", Tokens: 5, Requests: 2}})
 	row := byID(res.Rows, "solo")
-	// v2.4：单人榜 = 数据退化（A=B）→ 全榜 Cap，唯一一人即榜首 = 99
-	assertRow(t, row, 99.00, 99.00, 99.00)
+	assertRow(t, row, 20.00, 20.00, 20.00)
 	if row.Rank != 1 {
 		t.Errorf("单人的名次 = %d，期望 1", row.Rank)
 	}
@@ -160,8 +160,8 @@ func TestE2_Tie(t *testing.T) {
 		{ID: "t1", Tokens: 5000, Requests: 500},
 		{ID: "t2", Tokens: 5000, Requests: 500},
 	})
-	assertRow(t, byID(res.Rows, "t1"), 99.00, 99.00, 99.00)
-	assertRow(t, byID(res.Rows, "t2"), 99.00, 99.00, 99.00)
+	assertRow(t, byID(res.Rows, "t1"), 20.00, 20.00, 20.00)
+	assertRow(t, byID(res.Rows, "t2"), 20.00, 20.00, 20.00)
 	// 并列时按 id 升序稳定排序
 	if res.Rows[0].ID != "t1" || res.Rows[1].ID != "t2" {
 		t.Errorf("并列排序 = [%s, %s]，期望 [t1, t2]（按 id 升序）", res.Rows[0].ID, res.Rows[1].ID)
@@ -178,7 +178,7 @@ func TestE4_SingleUserMinZero(t *testing.T) {
 		[]Entry{{ID: "z", Tokens: 100, Requests: 100}},
 		Config{TopPercent: 1.0, BasePct: 0.0, SetBasePct: true},
 	)
-	assertRow(t, byID(res.Rows, "z"), 99.00, 99.00, 99.00)
+	assertRow(t, byID(res.Rows, "z"), 20.00, 20.00, 20.00)
 }
 
 // TestE3_ZeroActivity：零活跃精确落 floor（数据集 B 的 u5）。
@@ -188,24 +188,18 @@ func TestE3_ZeroActivity(t *testing.T) {
 		{ID: "z2", Tokens: 100, Requests: 50},
 	})
 	row := byID(res.Rows, "z1")
-	// z1 是 v=0，落在下锚点之下 → floor
-	if row.ScoreTok != 20 || row.ScoreReq != 20 {
-		t.Errorf("零活跃单维 = %.2f/%.2f，期望 20.00/20.00", row.ScoreTok, row.ScoreReq)
-	}
-	// total 是相对量：z1 落后榜首很远，拉伸后仍应是榜尾（远低于榜首 99）
-	if top := byID(res.Rows, "z2"); top.Total <= row.Total {
-		t.Errorf("零活跃用户的总分 %.2f 不应高于榜首 %.2f", row.Total, top.Total)
+	if row.ScoreTok != 20 || row.ScoreReq != 20 || row.Total != 20 {
+		t.Errorf("零活跃 = %.2f/%.2f/%.2f，期望 20.00/20.00/20.00", row.ScoreTok, row.ScoreReq, row.Total)
 	}
 }
 
 /* ─────────────────── 二、动态性：分数必须随全员数据变化 ─────────────────── */
 
 // TestDynamic_AnchorMovesWithData：把 erin 的 token 从 2 万抬到 10 万，
-// 锚点随之抬高，其他人分数被压低。
+// 锚点必须随之抬高，其他人的分数必须下降。
 //
-// v2.4 语义：拉伸后榜首恒为 Cap(99)，所以榜首用量变化的证据
-// 不在榜首自己的分数上（它永远是 99），而在**其他人被压低了多少**。
-// 若锚点不随榜首变化，其他人分数就不会变——这就是本测试的判据。
+// 这条是"动态综合评分"的核心证据：分数不是固定累加器，
+// 而是全员数据位置的相对刻度。
 func TestDynamic_AnchorMovesWithData(t *testing.T) {
 	before := ScoreBoard(datasetA())
 
@@ -213,97 +207,37 @@ func TestDynamic_AnchorMovesWithData(t *testing.T) {
 	raised[4].Tokens = 100000 // erin
 	after := ScoreBoard(raised)
 
-	// 上锚必须被抬高：从 20000（榜首原值）升到 100000
+	// 锚点必须被抬高：P90 从 16000 升到 56000（5 个升序样本中第 4~5 位插值）
 	if after.Anchors.TopTok <= before.Anchors.TopTok {
-		t.Errorf("上锚未抬高：%v → %v",
-			before.Anchors.TopTok, after.Anchors.TopTok)
+		t.Errorf("上锚点未抬高：%v → %v", before.Anchors.TopTok, after.Anchors.TopTok)
 	}
 
-	// 其他人被压低（他们在 token 维度的相对位置变差）：
-	// alice 82.63→57.89、bob 73.41→52.31、carol 60.42→44.45、dave 38.20→31.01
-	// 非榜首用户（bob/carol/dave）：token 单维分与总分都必须下降。
-	// alice 变成了新榜首（被软提升到 99），故不在此列。
+	// 除 erin（他本来就是 token 榜首）外，token 维度的锚点抬高 → 其他人分数下降。
+	// 注意：断言的是"分数确实变了且方向正确"，不写"提高某维一定不下降"这种伪命题。
 	checks := []struct {
-		id          string
-		beforeTok   float64
-		afterTok    float64
-		beforeTotal float64
-		afterTotal  float64
+		id        string
+		before    float64
+		after     float64
+		direction int // -1 下降 / +1 上升 / 0 不变
 	}{
-		{"bob", 73.41, 52.31, 62.80, 53.01},
-		{"carol", 60.42, 44.45, 51.37, 44.06},
-		{"dave", 38.20, 31.01, 31.31, 28.21},
+		{"alice", 79.44, 67.48, -1},
+		{"bob", 68.77, 58.82, -1},
+		{"carol", 55.70, 48.30, -1},
+		{"dave", 32.74, 29.64, -1},
+		{"frank", 44.72, 44.72, 0}, // 两维都在端点，不受影响
 	}
 	for _, c := range checks {
-		b := byID(before.Rows, c.id).ScoreTok
-		a := byID(after.Rows, c.id).ScoreTok
-		if a >= b-tolerance {
-			t.Errorf("%s 的 token 单维分应随榜首抬升而下降：%.2f → %.2f", c.id, b, a)
-		}
-		bt := byID(before.Rows, c.id).Total
-		at := byID(after.Rows, c.id).Total
-		if at >= bt-tolerance {
-			t.Errorf("%s 的总分应随榜首抬升而下降：%.2f → %.2f", c.id, bt, at)
-		}
-	}
-}
-
-// TestNoFullScoreEver：任何输入下都不得出现 ScoreMax(100) 分。
-//
-// 这是产品硬要求：满分位永远空着，榜首"接近满分但不是满分"。
-// 单人榜 / 并列 / 零活跃 / 随机数据 / 全同值——逐一验证。
-func TestNoFullScoreEver(t *testing.T) {
-	dsets := [][]Entry{
-		{{ID: "solo", Tokens: 5, Requests: 2}},
-		{{ID: "t1", Tokens: 5000, Requests: 500}, {ID: "t2", Tokens: 5000, Requests: 500}},
-		{{ID: "z1", Tokens: 0, Requests: 0}, {ID: "z2", Tokens: 100, Requests: 50}},
-		{{ID: "a", Tokens: 1, Requests: 1}, {ID: "b", Tokens: 1, Requests: 1}},
-		{{ID: "x", Tokens: 1e12, Requests: 1}},
-		datasetA(), datasetB(),
-	}
-	for i, ds := range dsets {
-		res := ScoreBoard(ds)
-		for _, r := range res.Rows {
-			if r.Total >= DefaultConfig.ScoreMax {
-				t.Errorf("数据集 #%d 用户 %s 拿到 %.2f 分（不得 ≥ %.0f）",
-					i, r.ID, r.Total, DefaultConfig.ScoreMax)
+		b := byID(before.Rows, c.id).Total
+		a := byID(after.Rows, c.id).Total
+		switch c.direction {
+		case -1:
+			if a >= b {
+				t.Errorf("%s 的分数应随锚点抬高而下降：%.2f → %.2f", c.id, b, a)
 			}
-			if r.Total > DefaultConfig.Cap+tolerance {
-				t.Errorf("数据集 #%d 用户 %s 超过 Cap(%.0f)：%.2f",
-					i, r.ID, DefaultConfig.Cap, r.Total)
+		case 0:
+			if math.Abs(a-b) > tolerance {
+				t.Errorf("%s 两维均在端点，分数应不变：%.2f → %.2f", c.id, b, a)
 			}
-		}
-	}
-	// 随机数据同样不得出现 100
-	rng := rand.New(rand.NewSource(99))
-	for round := 0; round < 300; round++ {
-		n := 1 + rng.Intn(25)
-		ds := make([]Entry, n)
-		for i := range ds {
-			ds[i] = Entry{ID: string(rune('a' + i)), Tokens: rng.Float64() * 1e9, Requests: rng.Float64() * 1e6}
-		}
-		for _, r := range ScoreBoard(ds).Rows {
-			if r.Total >= DefaultConfig.ScoreMax {
-				t.Fatalf("第 %d 轮 %s 出现满分 %.2f", round, r.ID, r.Total)
-			}
-		}
-	}
-}
-
-// TestTopIsAlwaysCap：软提升后榜首恰好等于 Cap（接近满分、不满分）。
-//
-// 注意：软提升只把榜首补到 Cap，**不改动他人的分数刻度**——这是与
-// "全局等比拉伸"的关键区别，后者会在榜首易主时把他人分数推高，
-// 造成"榜首涨了、别人反而涨"的反直觉结果。
-func TestTopIsAlwaysCap(t *testing.T) {
-	for _, ds := range [][]Entry{datasetA(), datasetB(), {{ID: "solo", Tokens: 7, Requests: 3}}} {
-		res := ScoreBoard(ds)
-		if len(res.Rows) == 0 {
-			continue
-		}
-		top := res.Rows[0] // 已按 total 降序
-		if math.Abs(top.Total-DefaultConfig.Cap) > tolerance {
-			t.Errorf("榜首分数 = %.2f，期望恰好 %.0f", top.Total, DefaultConfig.Cap)
 		}
 	}
 }
@@ -494,6 +428,7 @@ func TestConfigInvariants(t *testing.T) {
 		{"floor≥scoreMax 归零", Config{ScoreMax: 10, Floor: 50, SetFloor: true}, 0, 10},
 		{"pTop>1 截断为 1", Config{TopPercent: 1.5}, 20, 100},
 		{"权重和为2 归一", Config{Weights: Weights{Tokens: 1, Requests: 1}}, 20, 100},
+		{"k<1 回退默认", Config{KTop: 0.1}, 20, 100},
 	}
 	for _, c := range cases {
 		res := ScoreBoardWithConfig(datasetA(), c.cfg)

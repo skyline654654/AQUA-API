@@ -49,14 +49,14 @@ type Entry struct {
 // 零值无法区分"没设置"与"显式设为 0"，因此用独立的标记位表达"已设置"。
 // 代价是调用方稍啰嗦，但换来 floor=0、pBase=0 都能正确表达。
 type Config struct {
-	ScoreMax   float64 // 满分刻度（100，界面展示用；实际无人能拿到，见 Cap）
-	Cap        float64 // 实际可达的最高分（榜首 = Cap < ScoreMax，永不出现满分）
+	ScoreMax   float64 // 满分（榜首在两个维度都触顶时取得）
 	Floor      float64 // 保底分：数据退化 / 触底时给分，避免"0 分"与"没数据"混淆
 	SetFloor   bool    // 是否显式设置了 Floor
 	Weights    Weights // 两维权重（和会被归一化到 1）
-	TopPercent float64 // 下界备用锚点的分位（榜首为 0 时用它兜底）
+	TopPercent float64 // 上锚点分位（如 0.9 = P90）
 	BasePct    float64 // 下锚点分位（如 0.1 = P10）
 	SetBasePct bool    // 是否显式设置了 BasePct
+	KTop       float64 // 下锚点的倍数下限：max(k × B, P_top)
 }
 
 // Weights 是两个维度的权重，和必须为 1。
@@ -67,21 +67,20 @@ type Weights struct {
 
 // DefaultConfig 是全部默认参数。
 //
-// 取值理由（每一项都对应一个具体的失真模式）：
-//   - ScoreMax=100：百分制刻度，界面不需要再做换算；
-//   - Cap=99：**实际可达的最高分**。用 100 会让"触顶"与"满分"两件事混在一起，
-//     榜单上出现一排 100 分反而看不出谁强谁弱；压到 99 让榜首"接近满分但没有满分"，
-//     满分位置永远空着，视觉上就把"还有提升空间"表达出来了。
-//   - Floor=20：给"数据退化/触底"一个正数，0 分在榜单上会被误读为"没有数据"。
-//   - BasePct=0.10（P10）作下锚点：不用最小值，避免单个极端低值把所有人压到地板。
-//   - 权重各 0.5：两维等权，符合"token 与请求数并重"的产品定义。
+// 取值理由：
+//   - ScoreMax=100：百分制直观，界面不需要再做换算；
+//   - Floor=20：给"数据退化/触底"一个正数，0 分在榜单上会被误读为"没有数据"；
+//   - P90/P10：上锚点取 P90 而非最大值，避免单个极端值（刷量）把所有人压到地板；
+//     下锚点取 P10 而非最小值，保证"低活跃"是从底部开始分段；
+//   - K=5：当下锚点被 0 值污染时（B=0），用 5×0=0 无意义，
+//     此时退化为 P90 单独兜底——这也是为什么必须两个锚点取 max。
 var DefaultConfig = Config{
 	ScoreMax:   100,
-	Cap:        99,
 	Floor:      20,
 	Weights:    Weights{Tokens: 0.5, Requests: 0.5},
 	TopPercent: 0.90,
 	BasePct:    0.10,
+	KTop:       5.0,
 }
 
 // Row 是一条评分结果。
@@ -136,33 +135,11 @@ func ScoreBoardWithConfig(entries []Entry, cfg Config) Result {
 		requests[i] = sanitize(e.Requests)
 	}
 
-	// 锚点：上下界都由**全员数据实时**算出，不做增量更新。
-	//
-	// 上界 A 取**榜首实际值**（max）而非 P90 分位——这是 v2.4 的关键修正：
-	//  1) 动态性：榜首用量翻 10 倍时，A 跟着翻 10 倍，所有人分数立刻被压低，
-	//     分数真正表达"离榜首有多远"；用 P90 时榜首涨 10 倍，P90 常常只动一点，
-	//     榜首与他人差距拉不开，动态性形同虚设；
-	//  2) 区分度：P90 意味着一成的人天然触顶，榜单上出现一排并列第一，
-	//     读者无法分辨谁更强。用 max 则只有榜首触顶。
-	// 榜首为 0（全员零活跃）时退化为 P90，保证锚点区间仍然成立。
-	topTok := maxOf(tokens)
-	topReq := maxOf(requests)
-	if topTok <= 0 {
-		topTok = percentile(tokens, c.TopPercent)
-	}
-	if topReq <= 0 {
-		topReq = percentile(requests, c.TopPercent)
-	}
-
-	// 下界 B 取 P10，且保证严格小于上界、且 > 0（对数插值的分母不能为 0）。
+	// 锚点：全员数据实时算出，不做任何增量更新。
 	baseTok := percentile(tokens, c.BasePct)
-	if baseTok <= 0 {
-		baseTok = 1
-	}
+	topTok := math.Max(c.KTop*baseTok, percentile(tokens, c.TopPercent))
 	baseReq := percentile(requests, c.BasePct)
-	if baseReq <= 0 {
-		baseReq = 1
-	}
+	topReq := math.Max(c.KTop*baseReq, percentile(requests, c.TopPercent))
 
 	rows := make([]Row, 0, len(entries))
 	for i, e := range entries {
@@ -178,41 +155,11 @@ func ScoreBoardWithConfig(entries []Entry, cfg Config) Result {
 			ID:       e.ID,
 			Tokens:   tokens[i],
 			Requests: requests[i],
-			ScoreTok: sTok,
-			ScoreReq: sReq,
-			Total:    totalRaw,
+			ScoreTok: round2(sTok),
+			ScoreReq: round2(sReq),
+			Total:    round2(totalRaw),
 			TotalRaw: totalRaw,
 		})
-	}
-
-	// 榜首软提升：把榜首补到 Cap（接近满分但不满分），**不改动其他人的分数**。
-	//
-	// 为什么只提升榜首而不是全局拉伸：全局等比缩放会扭曲他人的刻度——
-	// 当榜首易主时（例如原榜首用量翻 5 倍后，另一人反而成了新榜首），
-	// 被拉伸的人会突然跟榜首并列，剩下的人则被相对抬高，出现
-	// "榜首涨了、别人分数反而涨"这种反直觉结果。
-	// 只补榜首则：他人的分数完全由「相对锚点的位置」决定，锚点随榜首变化
-	// 而同步变化，动态性成立；榜首也不会因为几何平均的折损而看起来不够突出。
-	if len(rows) > 0 {
-		top := 0
-		for i := range rows {
-			if rows[i].TotalRaw > rows[top].TotalRaw {
-				top = i
-			}
-		}
-		if rows[top].TotalRaw < c.Cap {
-			rows[top].TotalRaw = c.Cap
-			rows[top].Total = c.Cap
-		}
-	}
-
-	// 统一舍入（展示字段）
-	for i := range rows {
-		rows[i].ScoreTok = round2(rows[i].ScoreTok)
-		rows[i].ScoreReq = round2(rows[i].ScoreReq)
-		if rows[i].Total != c.Cap {
-			rows[i].Total = round2(rows[i].Total)
-		}
 	}
 
 	// 显式多级排序：total 降 → tokens 降 → requests 降 → id 升。
@@ -252,9 +199,6 @@ func mergeConfig(cfg Config) Config {
 	if cfg.ScoreMax > 0 {
 		c.ScoreMax = cfg.ScoreMax
 	}
-	if cfg.Cap > 0 {
-		c.Cap = cfg.Cap
-	}
 	if cfg.SetFloor {
 		c.Floor = cfg.Floor
 	}
@@ -263,6 +207,9 @@ func mergeConfig(cfg Config) Config {
 	}
 	if cfg.SetBasePct {
 		c.BasePct = cfg.BasePct
+	}
+	if cfg.KTop >= 1 {
+		c.KTop = cfg.KTop
 	}
 	// 权重：先按"和归一"，因此 (1,1) 合法（各 0.5）；全 0 视为未设置。
 	sum := cfg.Weights.Tokens + cfg.Weights.Requests
@@ -276,16 +223,14 @@ func mergeConfig(cfg Config) Config {
 	if c.Floor < 0 {
 		c.Floor = 0
 	}
+	if c.Floor >= c.ScoreMax {
+		c.Floor = 0
+	}
 	if c.TopPercent > 1 {
 		c.TopPercent = 1
 	}
-	// Cap 必须严格小于 ScoreMax —— 这是"无人满分"这条产品要求的不变式。
-	// 调用方若把 Cap 设成等于或超过 ScoreMax，退回默认的 99。
-	if c.Cap >= c.ScoreMax || c.Cap <= 0 {
-		c.Cap = math.Min(DefaultConfig.Cap, c.ScoreMax*0.99)
-	}
-	if c.Floor >= c.Cap {
-		c.Floor = 0
+	if c.KTop < 1 {
+		c.KTop = DefaultConfig.KTop
 	}
 	return c
 }
@@ -322,36 +267,22 @@ func percentile(values []float64, p float64) float64 {
 
 // subScore 单维打分。分支顺序是规格的一部分，不可调换：
 //
-//	A ≤ B（数据退化，全员同值） → Cap：区间不存在，不应该让所有人拿地板分
-//	v ≥ A（触顶，含榜首）    → Cap：榜首拿接近满分但不满分
-//	v ≤ B（触底）            → floor
+//	A ≤ B（数据退化，全员同值） → scoreMax：区间不存在，不应该让所有人拿地板分
+//	v ≥ A（触顶）             → scoreMax
+//	v ≤ B（触底）             → floor
 //	区间内                   → 对数插值
-//
-// 触顶用 Cap 而非 ScoreMax，是"无人满分"这条产品要求的落点：
-// 满分刻度保留在 ScoreMax（100）用于展示，实际最高只给 Cap（99）。
 func subScore(v, a, b float64, c Config) float64 {
 	if a <= b {
-		return c.Cap
+		return c.ScoreMax
 	}
 	if v >= a {
-		return c.Cap
+		return c.ScoreMax
 	}
 	if v <= b {
 		return c.Floor
 	}
 	y := math.Log(v/b) / math.Log(a/b)
-	return c.Floor + (c.Cap-c.Floor)*y
-}
-
-// maxOf 返回切片最大值（全 0 时返回 0，由调用方决定兜底策略）。
-func maxOf(xs []float64) float64 {
-	mx := 0.0
-	for _, v := range xs {
-		if v > mx {
-			mx = v
-		}
-	}
-	return mx
+	return c.Floor + (c.ScoreMax-c.Floor)*y
 }
 
 // round2 是 round-half-up 到两位小数。
