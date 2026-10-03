@@ -14,6 +14,7 @@
  */
 import { api, UPSTREAM_TIMEOUT_MS } from './client'
 import type {
+  AbuseEvent,
   AccessToken,
   AdminUpdateTokenPayload,
   AdminUser,
@@ -492,4 +493,14 @@ export function deleteRedeemCode(id: number): Promise<unknown> {
  */
 export function deleteInvalidRedeemCodes(): Promise<{ deleted: number }> {
   return api.delete<{ deleted: number }>('/admin/redeem-codes/invalid')
+}
+
+/**
+ * GET /api/admin/abuse-events：最近的异常用量事件（盗 Key / 突发流量检测结果）。
+ *
+ * 只读：系统只记录异常、不自动处置（误伤正常业务的代价远高于多记一条事件），
+ * 是否限流/停用由站长看到事件后手工判断。
+ */
+export function listAbuseEvents(limit = 50): Promise<{ events: AbuseEvent[] }> {
+  return api.get<{ events: AbuseEvent[] }>('/admin/abuse-events', { limit })
 }

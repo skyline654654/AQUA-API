@@ -15,10 +15,16 @@
 import { api } from './client'
 import type {
   AccessToken,
+  AlertRecord,
+  CostAttribution,
   CreateOrderPayload,
   CreateTokenPayload,
   CreateTokenResult,
   FinanceSummary,
+  ModelRecommend,
+  UserKey,
+  UserKeyPayload,
+  UserKeyProvider,
   LeaderboardStats,
   LogQuery,
   ModelStats,
@@ -158,4 +164,60 @@ export function fetchMyTrial(): Promise<TrialGrant> {
  */
 export function getMyOrder(tradeNo: string): Promise<PaymentOrder> {
   return api.get<PaymentOrder>(`/user/orders/${encodeURIComponent(tradeNo)}`)
+}
+
+/* ── 智能运营：成本归因 / 模型推荐 / 预警 / 自备密钥 ─────────────────── */
+
+/**
+ * GET /api/user/cost/attribution：按场景标签切分的成本归因。
+ *
+ * days：统计窗口（默认 30，上限 180）。回答"我的钱花在哪"。
+ */
+export function fetchCostAttribution(days = 30): Promise<CostAttribution> {
+  return api.get<CostAttribution>('/user/cost/attribution', { days })
+}
+
+/**
+ * GET /api/user/recommend/models：基于个人使用历史的模型推荐。
+ *
+ * limit：返回条数（默认 6，上限 20）。
+ * 路径刻意是 /recommend/models 而非 /models/recommend——
+ * 后者会与已存在的 /models/:model/stats 在路由树上争同一层通配段。
+ */
+export function fetchModelRecommend(limit = 6): Promise<ModelRecommend> {
+  return api.get<ModelRecommend>('/user/recommend/models', { limit })
+}
+
+/** GET /api/user/alerts：我的预警记录（门户预警中心） */
+export function fetchMyAlerts(limit = 20): Promise<{ alerts: AlertRecord[] }> {
+  return api.get<{ alerts: AlertRecord[] }>('/user/alerts', { limit })
+}
+
+/** GET /api/user/key-providers：可自助接入的上游白名单 */
+export function fetchKeyProviders(): Promise<{ providers: UserKeyProvider[] }> {
+  return api.get<{ providers: UserKeyProvider[] }>('/user/key-providers')
+}
+
+/** GET /api/user/keys：我的自备密钥列表（响应只含掩码，无明文） */
+export function listUserKeys(): Promise<{ keys: UserKey[] }> {
+  return api.get<{ keys: UserKey[] }>('/user/keys')
+}
+
+/** POST /api/user/keys：新增自备密钥（明文经 HTTPS 传给服务端后加密落库） */
+export function createUserKey(payload: UserKeyPayload): Promise<{ key: UserKey }> {
+  return api.post<{ key: UserKey }>('/user/keys', payload)
+}
+
+/**
+ * PATCH /api/user/keys/{id}：修改自备密钥。
+ *
+ * api_key 留空表示"不修改"——编辑弹层不回填明文，只把掩码显示给用户辨认。
+ */
+export function updateUserKey(id: number, payload: UserKeyPayload): Promise<{ key: UserKey }> {
+  return api.patch<{ key: UserKey }>(`/user/keys/${id}`, payload)
+}
+
+/** DELETE /api/user/keys/{id}：删除自备密钥（不可恢复，凭据本就在用户手里） */
+export function deleteUserKey(id: number): Promise<{ deleted: number }> {
+  return api.delete<{ deleted: number }>(`/user/keys/${id}`)
 }

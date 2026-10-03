@@ -14,6 +14,10 @@ import { fetchMyTrial } from '@/api/portal'
 import { fetchMyUsage } from '@/api/portal'
 import type { UsageStats } from '@/api/types'
 import { UsageLeaderboard } from '@/components/UsageLeaderboard'
+import { AlertCenterPanel } from '@/components/AlertCenterPanel'
+import { CostAttributionPanel } from '@/components/CostAttributionPanel'
+import { ModelRecommendPanel } from '@/components/ModelRecommendPanel'
+import { UserKeysPanel } from '@/components/UserKeysPanel'
 import { Card, Skeleton, StatCard } from '@/components/ui/Display'
 import { EChart } from '@/components/ui/EChart'
 import { useAuth } from '@/lib/auth/auth-context'
@@ -143,6 +147,14 @@ export default function ConsoleOverviewPage() {
 
       {/* 用量排行榜：付费榜 / 免费榜（各 Top 20，自己所在行高亮并标注"我"） */}
       <UsageLeaderboard />
+
+      {/* 智能运营：按使用行为推荐、钱花在哪、额度预警、自备密钥。
+          聚在概览页是因为它们回答的是同一组问题——「我怎么用、怎么用更划算」，
+          拆到多个菜单会让用户在需要时想不起来去看。 */}
+      <ModelRecommendPanel />
+      <CostAttributionPanel />
+      <AlertCenterPanel />
+      <UserKeysPanel />
     </div>
   )
 }

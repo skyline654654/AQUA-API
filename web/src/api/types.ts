@@ -1932,3 +1932,154 @@ export interface UpdateRedeemCodePayload {
   remark?: string
 }
 
+
+/* ── 智能运营：成本归因 / 模型推荐 / 预警 / 自备密钥（BYOK）─────────── */
+
+/** 单个场景的成本归因项（GET /api/user/cost/attribution） */
+export interface CostAttributionItem {
+  /** 场景标签（untagged / playground / 客户端自定义） */
+  tag: string
+  /** 便于展示的中文名；自定义标签原样返回 */
+  tag_label: string
+  requests: number
+  tokens: number
+  /** 消耗额度（内部计费单位，勿换算成金额） */
+  quota: number
+  /** 占总额度的比例（0~1） */
+  share: number
+  /** 单次请求平均 Token */
+  avg_tokens: number
+}
+
+/** 成本归因的总量汇总 */
+export interface CostAttributionSummary {
+  requests: number
+  tokens: number
+  quota: number
+  /** 返回的标签数（被截断时是展示条数而非精确总数） */
+  tag_count: number
+  /** 结果是否因超过上限而被截断 */
+  truncated: boolean
+  days: number
+}
+
+export interface CostAttribution {
+  items: CostAttributionItem[]
+  summary: CostAttributionSummary
+}
+
+/** 一条推荐理由 */
+export interface ModelRecommendReason {
+  /** complement（互补）/ popular（热门）/ new（新模型） */
+  kind: string
+  /** 面向用户的说明文案 */
+  text: string
+  /** 依据（如"你常使用的 deepseek-chat"） */
+  based_on?: string
+  /** 降本类理由给出的预估节省额度 */
+  saving_quota: number
+}
+
+/** 单个模型的推荐结果（GET /api/user/recommend/models） */
+export interface ModelRecommendItem {
+  model: string
+  display_name: string
+  vendor: string
+  description: string
+  /** 排序分（0~100，仅内部使用，不展示） */
+  reasons: ModelRecommendReason[]
+  /** 单次调用预估额度（0 = 无价格数据） */
+  estimated_quota_per_call: number
+  /** 该模型是否是用户已在用的 */
+  is_using: boolean
+}
+
+export interface ModelRecommend {
+  items: ModelRecommendItem[]
+  /** true 表示用户尚无使用记录，本次是站内热门兜底推荐 */
+  cold_start: boolean
+  /** 推荐依据的一句话说明；冷启动时为空串 */
+  profile_hint: string
+}
+
+/** 一条预警记录（GET /api/user/alerts） */
+export interface AlertRecord {
+  id: number
+  /** quota_low / quota_drain / usage_spike */
+  kind: string
+  kind_text: string
+  /** 1=提示 2=警告 3=紧急 */
+  severity: number
+  title: string
+  /** 从邮件正文提取的纯文本摘要（非 HTML，可安全展示） */
+  summary: string
+  /** 预计还能用多少天 */
+  days_left: number
+  /** false 表示邮件未送达（仅站内可见） */
+  delivered: boolean
+  window_bucket: number
+  /** Unix 秒 */
+  created_at: number
+}
+
+/** 用户自备密钥（GET /api/user/keys） */
+export interface UserKey {
+  id: number
+  provider: string
+  provider_label: string
+  label: string
+  /** 掩码凭据（如 nvap***cdef）；明文绝不出现在响应里 */
+  masked_key: string
+  base_url: string
+  /** 实际生效的接入点（自填优先，否则默认） */
+  effective_base_url: string
+  models: string[]
+  status: number
+  status_text: string
+  fail_count: number
+  cooldown_until: number
+  /** true 表示处于熔断期（平台暂时隔离，非用户主动停用） */
+  cooling_down: boolean
+  last_used_at: number
+  created_at: number
+  updated_at: number
+}
+
+/** 可自助接入的上游白名单（GET /api/user/key-providers） */
+export interface UserKeyProvider {
+  key: string
+  label: string
+  default_base_url: string
+  base_url_editable: boolean
+  notes: string
+  suggested_models?: string[]
+}
+
+/** POST/PATCH /api/user/keys 请求体
+ *
+ * 注意 models 是【逗号分隔字符串】而非数组。
+ * api_key 留空表示"不修改"（编辑时不回填掩码，明文不过网）。
+ */
+export interface UserKeyPayload {
+  provider: string
+  label?: string
+  api_key?: string
+  base_url?: string
+  models?: string
+}
+
+/** 管理后台：异常用量事件（GET /api/admin/abuse-events） */
+export interface AbuseEvent {
+  id: number
+  user_id: number
+  username: string
+  token_id: number
+  kind: string
+  kind_text: string
+  severity: number
+  action: string
+  detail: string
+  metric: number
+  threshold: number
+  created_at: number
+}
