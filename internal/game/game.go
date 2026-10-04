@@ -373,6 +373,17 @@ func (p *Position) Empty() bool {
 	return true
 }
 
+// LastMoveSeq 返回已走的手数（即上一手的序号；开局为 0）。
+//
+// 用"上一手的序号"而不是维护一个独立计数器：计数器与 LastMove 是同一事实的
+// 两份记录，任何一处的遗漏都会让两者不一致（表现为手数跳号或倒退）。
+func (p *Position) LastMoveSeq() int {
+	if p.LastMove == nil {
+		return 0
+	}
+	return p.LastMove.Seq
+}
+
 // StoneCount 统计一方在盘面上的子数。
 func (p *Position) StoneCount(c Color) int {
 	n := 0
