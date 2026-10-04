@@ -2,13 +2,13 @@
 //
 // 意图（Why）：
 //
-//	BYOK 涉及两条极容易搞反的语义，每一条弄错都直接损害用户利益：
+//		BYOK 涉及两条极容易搞反的语义，每一条弄错都直接损害用户利益：
 //
-//  1. **不双扣费**：用户已经付钱给 NVIDIA 了，站内再扣就是双重收费。
-//     测试用「扣费金额必须为 0」把这条钉死。
-//  2. **额度墙不能拦住 BYOK**：额度耗尽的用户配了自己的 Key，
-//     必须在鉴权阶段就放行——否则功能在最外层就被拦死，
-//     用户会看到"我明明配了密钥却还是 429"。
+//	 1. **不双扣费**：用户已经付钱给 NVIDIA 了，站内再扣就是双重收费。
+//	    测试用「扣费金额必须为 0」把这条钉死。
+//	 2. **额度墙不能拦住 BYOK**：额度耗尽的用户配了自己的 Key，
+//	    必须在鉴权阶段就放行——否则功能在最外层就被拦死，
+//	    用户会看到"我明明配了密钥却还是 429"。
 package relay
 
 import (
@@ -211,9 +211,9 @@ func TestSettleQuota_BYOK不扣站内额度(t *testing.T) {
 	// 一次"用掉很多 token"的 BYOK 调用。
 	settled := r.settleQuota(ctx, usageEntry{
 		UserID: 1, TokenID: 1, Model: "gpt-4o",
-		Usage:           openAIUsage{PromptTokens: 100_000, CompletionTokens: 100_000},
-		ByOKUserKeyID:   7,
-		StatusCode:      200,
+		Usage:         openAIUsage{PromptTokens: 100_000, CompletionTokens: 100_000},
+		ByOKUserKeyID: 7,
+		StatusCode:    200,
 	})
 
 	if settled != 0 {

@@ -200,8 +200,8 @@ type AlertNotification struct {
 	// EstimatedDaysLeft 是预计余额可支撑天数（趋势预警有值，紧急预警为 0）。
 	EstimatedDaysLeft int
 	// Delivered 1=已发出；0=发送失败（保留记录以便下轮重试）。
-	Delivered   int
-	CreatedAt   time.Time
+	Delivered int
+	CreatedAt time.Time
 }
 
 // ErrAlertAlreadySent 表示该冷却窗口内已发过同类预警。

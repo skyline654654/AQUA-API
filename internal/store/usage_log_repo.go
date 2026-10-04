@@ -394,13 +394,13 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 	byUser := make(map[uint64]*rowSample)
 	for rows.Next() {
 		var (
-			userID         uint64
-			tokens         int64
-			avgLatency     float64
-			requests       int64
-			successReqs    int64
-			username       string
-			paid           bool
+			userID      uint64
+			tokens      int64
+			avgLatency  float64
+			requests    int64
+			successReqs int64
+			username    string
+			paid        bool
 		)
 		if err := rows.Scan(&userID, &tokens, &avgLatency, &requests, &successReqs, &username, &paid); err != nil {
 			return nil, fmt.Errorf("store: 读取排行榜聚合结果失败: %w", err)
@@ -438,9 +438,9 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 
 	for eventRows.Next() {
 		var (
-			userID   uint64
-			created  int64
-			latency  int
+			userID  uint64
+			created int64
+			latency int
 		)
 		if err := eventRows.Scan(&userID, &created, &latency); err != nil {
 			return nil, fmt.Errorf("store: 读取排行榜并发样本失败: %w", err)

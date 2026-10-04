@@ -247,12 +247,12 @@ func (r *userKeyRepository) MarkSuccess(ctx context.Context, id uint64) error {
 // scanUserKey 把一行映射为领域对象（并解密 api_key_enc）。
 func (r *userKeyRepository) scanUserKey(row rowScanner) (*model.UserKey, error) {
 	var (
-		id                                     uint64
-		userID, failCount                      int
-		provider, label, keyEnc, baseURL, mod  string
-		status                                 int
-		cooldownUntil, lastUsedAt              int64
-		createdAt, updatedAt                   int64
+		id                                    uint64
+		userID, failCount                     int
+		provider, label, keyEnc, baseURL, mod string
+		status                                int
+		cooldownUntil, lastUsedAt             int64
+		createdAt, updatedAt                  int64
 	)
 	if err := row.Scan(&id, &userID, &provider, &label, &keyEnc, &baseURL, &mod,
 		&status, &failCount, &cooldownUntil, &lastUsedAt, &createdAt, &updatedAt); err != nil {

@@ -159,9 +159,9 @@ func (r *abuseRepository) ListRecent(ctx context.Context, limit int) ([]*model.A
 	result := make([]*model.AbuseEvent, 0, limit)
 	for rows.Next() {
 		var (
-			event      model.AbuseEvent
-			severity   int
-			createdAt  int64
+			event     model.AbuseEvent
+			severity  int
+			createdAt int64
 		)
 		if err := rows.Scan(&event.ID, &event.UserID, &event.TokenID, &event.Kind,
 			&severity, &event.Action, &event.Detail, &event.Metric, &event.Threshold, &createdAt); err != nil {

@@ -35,7 +35,7 @@ import (
 // Provider 是「用户可自助接入的上游」的一份可对外展示的描述。
 //
 // 它是 channeltype.Type 的**对外视图**：只暴露用户需要知道的字段
-//（名称、默认地址、可选模型），不暴露协议/鉴权等内部实现细节——
+// （名称、默认地址、可选模型），不暴露协议/鉴权等内部实现细节——
 // 那些是站长配置渠道时用的，不该出现在面向普通用户的密钥管理页。
 type Provider struct {
 	// Key 是稳定标识，落进 user_keys.provider（改名会导致老数据失效）。
@@ -63,9 +63,9 @@ type Provider struct {
 // 白名单是刻意的收敛，把"技术上可行"与"产品上开放"分开。
 var byokProviders = map[string]Provider{
 	"nvidia": {
-		Key:  "nvidia",
-		Label: "NVIDIA NIM",
-		DefaultBaseURL: "https://integrate.api.nvidia.com/v1",
+		Key:             "nvidia",
+		Label:           "NVIDIA NIM",
+		DefaultBaseURL:  "https://integrate.api.nvidia.com/v1",
 		BaseURLEditable: true,
 		Notes: "NVIDIA 官方模型推理服务（OpenAI 兼容）。填入你在 build.nvidia.com 申请到的 API Key，" +
 			"即可用你自己的 NVIDIA 额度访问模型，费用由 NVIDIA 直接向你收取。",

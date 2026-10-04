@@ -25,7 +25,7 @@ func TestNormalizeTag(t *testing.T) {
 		{"纯空白归为 untagged", "   \t\n ", TagUntagged},
 		{"去掉首尾空白", "  playground  ", "playground"},
 		{"普通标签原样", "billing-gateway", "billing-gateway"},
-		{"超长截断到 32 字节", longString(MaxTagLength+10), longString(MaxTagLength)},
+		{"超长截断到 32 字节", longString(MaxTagLength + 10), longString(MaxTagLength)},
 		{"恰好 32 字节不截断", longString(MaxTagLength), longString(MaxTagLength)},
 		{"中英混合保留", "支付网关-商户回调", "支付网关-商户回调"},
 	}

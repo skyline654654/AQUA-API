@@ -111,7 +111,7 @@ type UsageLog struct {
 	// 取值必经NormalizeTag 归一（去空白 / 截断 32 字节 / 空值归 untagged），
 	// 保证聚合时同一场景不会因为写法差异被拆成多行。
 	// 站内游乐场由服务端强制注入 model.TagPlayground，客户端无法伪造。
-	Tag string
+	Tag       string
 	CreatedAt time.Time // 记录时间
 }
 

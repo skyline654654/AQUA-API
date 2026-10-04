@@ -140,10 +140,10 @@ func byokChannelFromKey(key *model.UserKey, provider byok.Provider, baseURL, mod
 		BaseURL: baseURL,
 		// APIKey 是用户自己的凭据。鉴权方式由 TypeKey 决定，
 		// 因此类型取 provider 的 key（与渠道目录里的 key 同名）。
-		APIKey:  key.APIKey,
-		Models:  models,
-		Status:  model.ChannelStatusEnabled,
-		Weight:  1,
+		APIKey: key.APIKey,
+		Models: models,
+		Status: model.ChannelStatusEnabled,
+		Weight: 1,
 		// TypeKey 复用渠道目录的注册名：白名单里的 provider key
 		// 必须同时是一个已登记的渠道类型（见 byok.AuthHeaders 的白名单校验），
 		// 这样鉴权头与协议适配器就都能自动对上。

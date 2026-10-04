@@ -71,9 +71,9 @@ type UserKey struct {
 	FailCount int
 	// CooldownUntil 是熔断恢复时间（Unix 秒）；0 = 未熔断。
 	CooldownUntil int64
-	LastUsedAt  int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	LastUsedAt    int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // IsEnabled 判断该密钥当前是否可参与选路。

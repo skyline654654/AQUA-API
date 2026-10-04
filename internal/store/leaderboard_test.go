@@ -1,14 +1,16 @@
 // 排行榜聚合与峰值并发算法的测试。
 //
 // 意图（Why）：
-//   排行榜的分数口径、付费/免费分榜、峰值并发估算都直接呈现给用户，
-//   出错可见性强。这里重点锁定：
-//     1) peakConcurrency 的差分扫描算法（区间重叠边界最容易算错）；
-//     2) Leaderboard 的成功请求过滤（失败请求不得混入分数与耗时）；
-//     3) 付费标记（EXISTS payment_orders status=2）正确归属分组。
+//
+//	排行榜的分数口径、付费/免费分榜、峰值并发估算都直接呈现给用户，
+//	出错可见性强。这里重点锁定：
+//	  1) peakConcurrency 的差分扫描算法（区间重叠边界最容易算错）；
+//	  2) Leaderboard 的成功请求过滤（失败请求不得混入分数与耗时）；
+//	  3) 付费标记（EXISTS payment_orders status=2）正确归属分组。
 //
 // 流转（Flow）：
-//   go test ./internal/store/ -run Leaderboard → 内存 SQLite 写入样本后核验
+//
+//	go test ./internal/store/ -run Leaderboard → 内存 SQLite 写入样本后核验
 package store
 
 import (
@@ -90,7 +92,7 @@ func TestLeaderboard_SuccessOnlyAndPaidSplit(t *testing.T) {
 	paidUserID := uint64(7)
 
 	// 免费用户：2 次成功 + 1 次失败
-	createLog(t, repo, userID, now.Add(-time.Hour), 200, 100, 80)  // 成功 token=100
+	createLog(t, repo, userID, now.Add(-time.Hour), 200, 100, 80) // 成功 token=100
 	createLog(t, repo, userID, now.Add(-2*time.Hour), 200, 200, 120)
 	createLog(t, repo, userID, now.Add(-3*time.Hour), 500, 999, 10) // 失败：请求数计入、token 计入、成功率扣分
 
