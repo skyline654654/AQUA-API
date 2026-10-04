@@ -313,12 +313,28 @@ export interface LeaderboardTotals {
   users: number
 }
 
-/** GET /api/user/leaderboard?days=30 响应 */
+/**
+ * GET /api/user/leaderboard?days=30 响应。
+ *
+ * 分榜口径是【请求是否计费】，不是"用户是否充过值"：
+ *   · billed = 计费请求榜；free = 免费请求榜；
+ *   · 一次调用只属于一个榜，因此两个榜的请求数【互斥】，
+ *     相加正好等于"全站请求数"（见 split 字段，可直接验证这一点）；
+ *   · 同一用户可能同时出现在两榜（既用过免费模型也用过计费模型），
+ *     但各自只统计自己那部分请求，不会重复计数。
+ */
 export interface LeaderboardStats {
   range_days: number
   totals: LeaderboardTotals
-  paid: LeaderboardSection
+  /** 计费请求榜 */
+  billed: LeaderboardSection
+  /** 免费请求榜 */
   free: LeaderboardSection
+  /** 两榜请求数合计（互斥，相加即全站总量） */
+  split: {
+    billed_requests: number
+    free_requests: number
+  }
   updated_at: number
 }
 

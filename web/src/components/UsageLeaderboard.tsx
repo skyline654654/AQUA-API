@@ -1,11 +1,12 @@
 /**
- * 用量排行榜组件：付费榜 / 免费榜（各 Top 20）。
+ * 用量排行榜组件：计费榜 / 免费榜（各 Top 20）。
  *
  * 意图（Why）：
  *   概览页图表下方放一张"谁在用、用了多少"的榜单，让用户看到自己的
  *   活跃度位置，也让站长（管理员）快速感知全站使用分布。
- *   拆成付费 / 免费两个 Tab：付费用户与免费用户的使用强度差异巨大，
- *   混排会让免费榜永远被付费用户占据。
+ *   拆成计费 / 免费两个 Tab，分榜口径是【请求是否计费】而不是"用户是否充过值"：
+ *   按人分类会把同一个人的两种流量混在一起，两榜的统计基数相互重叠。
+ *   按请求分类后一次调用只属于一个榜，两榜相加即全站（页面上直接展示该口径）。
  *
  * 流转（Flow）：
  *   console/page.tsx → <UsageLeaderboard /> → fetchLeaderboard(days, all)
@@ -160,12 +161,12 @@ function LeaderboardTable({ section }: { section: LeaderboardEntry[] }) {
   )
 }
 
-type TabKey = 'paid' | 'free'
+type TabKey = 'billed' | 'free'
 
 export function UsageLeaderboard() {
   const { isAdmin } = useAuth()
   const [stats, setStats] = useState<LeaderboardStats | null>(null)
-  const [tab, setTab] = useState<TabKey>('paid')
+  const [tab, setTab] = useState<TabKey>('billed')
   const [days, setDays] = useState(30)
   const [showAll, setShowAll] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -248,11 +249,30 @@ export function UsageLeaderboard() {
         </div>
       </div>
 
-      {/* Tab：付费榜 / 免费榜 */}
+      {/* 分榜口径：两榜互斥，相加即全站。显式展示是为了让"没有互相污染"
+          这件事可被用户自己核对——否则一旦两榜数字看起来不合理，
+          没人能判断是数据问题还是口径问题。 */}
+      {stats && (
+        <div className="border-b border-line px-4 py-2.5 text-xs text-ink-3">
+          按<strong className="font-medium text-ink-2">请求是否计费</strong>分榜：
+          计费 {formatNumber(stats.split?.billed_requests ?? 0)} 次 · 免费{' '}
+          {formatNumber(stats.split?.free_requests ?? 0)} 次
+          {(() => {
+            const b = stats.split?.billed_requests ?? 0
+            const f = stats.split?.free_requests ?? 0
+            const total = b + f
+            if (total <= 0) return null
+            return <>（合计 {formatNumber(total)} 次，与上方「总请求」一致）</>
+          })()}
+          。同一账号若两种都用过，会在两榜各出现一次，但各自的数字互不重复。
+        </div>
+      )}
+
+      {/* Tab：计费榜 / 免费榜 */}
       <div className="flex gap-1 border-b border-line px-4 pt-2">
         {(
           [
-            { key: 'paid', label: '付费榜' },
+            { key: 'billed', label: '计费榜' },
             { key: 'free', label: '免费榜' },
           ] as { key: TabKey; label: string }[]
         ).map((item) => (
