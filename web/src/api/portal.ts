@@ -267,14 +267,15 @@ export function deleteGame(id: number): Promise<{ deleted: number }> {
 }
 
 /**
- * 当前局面的图片地址（即模型看到的那一张）。
+ * 取当前局面的图片（即模型看到的那一张）。
  *
- * 直接给 <img src> 用，因此返回 URL 而不是去 fetch 二进制——
- * 图片需要带会话鉴权，而 <img> 不会带 Authorization，
- * 所以这里走同源 Cookie 会话（门户接口支持会话 Cookie 鉴权）。
- * 加时间戳参数是为了绕过浏览器缓存：局面每推进一手图就变了。
+ * 必须走 getBlob 而不是把 URL 塞给 <img src>：会话鉴权只认 Authorization 头，
+ * 而 <img> 不会带自定义头，直接引 URL 会拿到 401 与一张破图。
+ * 拿到 Blob 后由页面转成 object URL 显示。
+ *
+ * version 参与请求参数只是为了绕过浏览器缓存（局面每推进一手图就变了）；
+ * axios 的 params 会拼成查询串，因此与后端无关。
  */
-export function gameBoardURL(id: number, version: number): string {
-  const base = process.env.NEXT_PUBLIC_API_BASE || '/api'
-  return `${base}/user/games/${id}/board.png?v=${version}`
+export function fetchGameBoard(id: number, version: number): Promise<Blob> {
+  return api.getBlob(`/user/games/${id}/board.png`, { v: version })
 }

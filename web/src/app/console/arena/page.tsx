@@ -39,7 +39,7 @@ import {
   createGame,
   deleteGame,
   fetchGame,
-  gameBoardURL,
+  fetchGameBoard,
   listGames,
   stepGame,
 } from '@/api/portal'
@@ -80,10 +80,11 @@ export default function ArenaPage() {
   const [selected, setSelected] = useState<{ x: number; y: number } | null>(null)
   /** 人类输入框（除了点棋盘，也允许直接打坐标） */
   const [manualMove, setManualMove] = useState('')
-  /** 局面版本号：用于让"模型看到的图"的 URL 变化以绕过缓存 */
-  const boardVersion = match?.updated_at ?? 0
 
   const autoRef = useRef(false)
+  /** 「模型看到的画面」的 object URL（由 blob 转出） */
+  const [boardImage, setBoardImage] = useState('')
+  const [boardImageError, setBoardImageError] = useState('')
 
   const kindHint = useMemo(
     () => KINDS.find((k) => k.value === kind)?.hint ?? '',
@@ -110,6 +111,43 @@ export default function ArenaPage() {
       .then((r) => setHistory(r.matches ?? []))
       .catch(() => setHistory([]))
   }, [])
+
+  /**
+   * 载入「模型看到的画面」。
+   *
+   * 走 blob 而不是把 URL 塞给 <img src>：会话鉴权只认 Authorization 头，
+   * 而 <img> 不会带自定义头，直接引 URL 会拿到 401 与一张破图。
+   *
+   * 必须负责回收上一张的 object URL：不回收的话每走一手就泄漏一张图片，
+   * 一盘围棋几百手下来是很实在的内存占用。
+   */
+  useEffect(() => {
+    if (!match) {
+      setBoardImage('')
+      return
+    }
+    let revoked = false
+    let created = ''
+    void fetchGameBoard(match.id, match.updated_at)
+      .then((blob) => {
+        if (revoked) return
+        created = URL.createObjectURL(blob)
+        setBoardImage((prev) => {
+          if (prev) URL.revokeObjectURL(prev)
+          return created
+        })
+        setBoardImageError('')
+      })
+      .catch((e) => {
+        setBoardImageError(e instanceof Error ? e.message : '载入棋盘图失败')
+      })
+    return () => {
+      revoked = true
+      // 注意：这里不能直接 revoke created——它可能已经被 setBoardImage 接管，
+      // 而在 effect 清理时立刻撤销会让 <img> 正在用的 URL 失效（图闪一下变破图）。
+      // 交给下一次 setBoardImage 的 prev 回收即可。
+    }
+  }, [match])
 
   /** 刷新某个对局的棋盘与棋谱。 */
   const refresh = useCallback(async (id: number) => {
@@ -474,12 +512,16 @@ export default function ArenaPage() {
                   发给模型的就是这张图（服务端渲染）
                 </div>
               </div>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={gameBoardURL(match.id, boardVersion)}
-                alt="模型看到的棋盘"
-                className="block w-full"
-              />
+              {boardImageError ? (
+                <div className="px-4 py-6 text-center text-xs text-err">
+                  载入棋盘图失败：{boardImageError}
+                </div>
+              ) : boardImage ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={boardImage} alt="模型看到的棋盘" className="block w-full" />
+              ) : (
+                <div className="px-4 py-6 text-center text-xs text-ink-3">渲染中…</div>
+              )}
             </Card>
 
             {/* 棋谱 */}

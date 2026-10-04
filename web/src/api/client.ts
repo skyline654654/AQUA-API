@@ -205,16 +205,28 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
   }
 }
 
-/** 请求级可选参数（目前只用到超时覆盖） */
+/** 请求级可选参数 */
 interface RequestOptions {
   /** 覆盖默认超时（毫秒）；会等待上游的接口需要放宽到 UPSTREAM_TIMEOUT_MS */
   timeout?: number
+  /**
+   * 响应体类型。
+   *
+   * 需要它的原因：会话鉴权只认 Authorization 头（见后端 SessionAuth），
+   * 而 <img src> 这类标签【不会】带自定义头。因此要显示需要鉴权的图片
+   * （如对弈棋盘图）必须走 XHR/fetch 取二进制，再转成 object URL。
+   * 统一从这里走，才能复用同一个 401 处理与错误翻译。
+   */
+  responseType?: 'json' | 'blob'
 }
 
 /** 各视图与 api 模块统一使用的请求方法集合（路径不含 /api 前缀） */
 export const api = {
   get: <T>(url: string, params?: Record<string, unknown>, options?: RequestOptions): Promise<T> =>
     request<T>({ url, method: 'GET', params: cleanParams(params), ...options }),
+  /** GET 并返回二进制响应体（用于需要鉴权的图片） */
+  getBlob: (url: string, params?: Record<string, unknown>): Promise<Blob> =>
+    request<Blob>({ url, method: 'GET', params: cleanParams(params), responseType: 'blob' }),
 
   post: <T>(url: string, data?: unknown, options?: RequestOptions): Promise<T> =>
     request<T>({ url, method: 'POST', data, ...options }),
