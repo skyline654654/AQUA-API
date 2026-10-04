@@ -523,6 +523,9 @@ type gameStepResultForTest struct {
 	Over    bool          `json:"over"`
 	Aborted bool          `json:"aborted"`
 	Error   string        `json:"error"`
+	// CallFailed 表示模型【调用】失败（网络/额度/上游 5xx），
+	// 与"模型给不出合法着法"是两类完全不同的失败，必须分开断言。
+	CallFailed bool `json:"call_failed"`
 }
 
 var errUpstreamDown = &testError{"上游 503 Service Unavailable"}
