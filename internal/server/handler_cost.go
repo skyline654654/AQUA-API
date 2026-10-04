@@ -3,6 +3,7 @@
 // 意图（Why）：
 //
 //	站长与用户真正想知道的不是"我花了多少"，而是"钱花在哪"——
+//
 // 是站内游乐场试玩、还是某个插件在后台静默烧、还是某个脚本在刷。
 // 缺少这个维度，所有优化都只能靠猜。
 //
@@ -61,9 +62,9 @@ type costAttributionDTO struct {
 	// TagLabel 是便于直接展示的中文名（未标注/站内游乐场有专门文案，
 	// 自定义标签原样返回）。
 	TagLabel string `json:"tag_label"`
-	Requests int64   `json:"requests"`
-	Tokens   int64   `json:"tokens"`
-	Quota    int64   `json:"quota"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+	Quota    int64  `json:"quota"`
 	// Share 是该场景占总额度的比例（0~1），前端直接乘100 显示。
 	Share float64 `json:"share"`
 	// AvgTokens 是单次请求平均 token 数（衡量"这个场景有多重"）。
@@ -72,9 +73,9 @@ type costAttributionDTO struct {
 
 // costAttributionSummaryDTO 是总量汇总（看板顶部的四个数字）。
 type costAttributionSummaryDTO struct {
-	Requests int64   `json:"requests"`
-	Tokens   int64   `json:"tokens"`
-	Quota    int64   `json:"quota"`
+	Requests int64 `json:"requests"`
+	Tokens   int64 `json:"tokens"`
+	Quota    int64 `json:"quota"`
 	// TagCount 是出现过的场景数（被 LIMIT 截断时，实际标签数可能更多，
 	// 因此这里报的是"返回的标签数"而非精确总数）。
 	TagCount int `json:"tag_count"`
@@ -132,12 +133,12 @@ func (s *Server) handleCostAttribution(c *gin.Context) {
 		summary.Tokens += it.Tokens
 		summary.Quota += it.Quota
 		result = append(result, costAttributionDTO{
-			Tag:      it.Tag,
-			TagLabel: costTagLabel(it.Tag),
-			Requests: it.Requests,
-			Tokens:   it.Tokens,
-			Quota:    it.Quota,
-			Share:    it.Share,
+			Tag:       it.Tag,
+			TagLabel:  costTagLabel(it.Tag),
+			Requests:  it.Requests,
+			Tokens:    it.Tokens,
+			Quota:     it.Quota,
+			Share:     it.Share,
 			AvgTokens: it.AvgTokens,
 		})
 	}

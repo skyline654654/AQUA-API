@@ -69,12 +69,12 @@ type maintenanceOverviewResponse struct {
 
 // maintenanceRetryRatioDTO 是单个折扣分组的重试率读数（见 relay.RetryRatioSnapshot）。
 type maintenanceRetryRatioDTO struct {
-	Group           string  `json:"group"`             // 分组名
-	Ratio           int64   `json:"ratio"`             // 计费倍率（百分比，<100 即折扣档）
-	UpstreamCalls   int64   `json:"upstream_calls"`    // 累计上游调用次数（含重试）
-	ChargedRequests int64   `json:"charged_requests"`  // 累计产生了计费的请求数
-	RetryRatio      float64 `json:"retry_ratio"`       // r = 上游调用次数 / 计费请求次数
-	OverBreakEven   bool    `json:"over_break_even"`   // 已越过保本线（正在亏本）
+	Group           string  `json:"group"`            // 分组名
+	Ratio           int64   `json:"ratio"`            // 计费倍率（百分比，<100 即折扣档）
+	UpstreamCalls   int64   `json:"upstream_calls"`   // 累计上游调用次数（含重试）
+	ChargedRequests int64   `json:"charged_requests"` // 累计产生了计费的请求数
+	RetryRatio      float64 `json:"retry_ratio"`      // r = 上游调用次数 / 计费请求次数
+	OverBreakEven   bool    `json:"over_break_even"`  // 已越过保本线（正在亏本）
 }
 
 // maintenanceDatabaseDTO 描述数据库驱动与体积。

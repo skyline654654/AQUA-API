@@ -84,10 +84,10 @@ type recommendReasonDTO struct {
 
 // modelRecommendDTO 是单个模型的推荐结果。
 type modelRecommendDTO struct {
-	Model       string              `json:"model"`
-	DisplayName string              `json:"display_name"`
-	Vendor      string              `json:"vendor"`
-	Description string              `json:"description"`
+	Model       string `json:"model"`
+	DisplayName string `json:"display_name"`
+	Vendor      string `json:"vendor"`
+	Description string `json:"description"`
 	// Score 是推荐分（0~100，仅用于排序，不展示给用户）。
 	//
 	// 刻意不展示：分数是内部排序工具，把"推荐分78分"给用户看会引发
@@ -241,9 +241,9 @@ func (s *Server) coldStartRecommend(ctx context.Context, models []*model.Model, 
 			Description: m.Description,
 			Score:       float64(p.Requests),
 			Reasons: []recommendReasonDTO{{
-				Kind:     "popular",
-				Text:     "站内近期调用量最高的模型之一",
-				BasedOn:  itoa(int(p.Requests)) + " 次调用",
+				Kind:    "popular",
+				Text:    "站内近期调用量最高的模型之一",
+				BasedOn: itoa(int(p.Requests)) + " 次调用",
 			}},
 			EstimatedQuotaPerCall: s.estimateQuotaPerCall(ctx, m.Name),
 		})
@@ -339,9 +339,9 @@ func scoreCandidates(candidates []*model.Model, usage []model.ModelUsage) []mode
 			score += gain
 			base := dominantModelOf(usage, bestVendor, m.Vendor)
 			reasons = append(reasons, recommendReasonDTO{
-				Kind:     "complement",
-				Text:     "与你在用的 " + base + " 同属 " + m.Vendor + " 系列，迁移成本低",
-				BasedOn:  base,
+				Kind:    "complement",
+				Text:    "与你在用的 " + base + " 同属 " + m.Vendor + " 系列，迁移成本低",
+				BasedOn: base,
 			})
 		}
 

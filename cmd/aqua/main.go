@@ -265,6 +265,9 @@ func run() error {
 	// userKeys 复用 cipher：BYOK 的凭据与渠道密钥同属"长期账号级凭据"，
 	// 安全要求完全一致（明文绝不入库），不重复引入加密实现。
 	userKeys := store.NewUserKeyRepository(st.DB(), cipher)
+	// 对弈对局的持久化：对局跨多次请求推进（每手一次模型调用），
+	// 必须落库才能在刷新/断线后续上，棋谱本身也是演示的产物。
+	gameMatches := store.NewGameMatchRepository(st.DB())
 	costs := store.NewCostRepository(st.DB())
 	abuse := store.NewAbuseRepository(st.DB())
 	alerts := store.NewAlertRepository(st.DB())
@@ -523,7 +526,9 @@ func run() error {
 		Payment: paymentRegistry,
 		// 注册邮箱验证码：仓储 + 发信通道
 		EmailCodes: emailCodes,
-		Mailer:     mailerSender,
+		// 对弈对局与棋谱存储
+		GameMatches: gameMatches,
+		Mailer:      mailerSender,
 		// 邮件群发：批次仓储 + 执行器（后台触发"通知全站用户"时使用）
 		Broadcasts: emailBroadcasts,
 		Broadcast:  broadcastSender,
@@ -536,11 +541,11 @@ func run() error {
 		Corpus:        corpusGuard,
 		CorpusSamples: corpusRepo,
 		// 智能运营：成本归因 / 滥用检测 / 动态权重 / 用量预警 / 用户自备密钥
-		UserKeys:              userKeys,
-		Costs:                 costs,
-		Abuse:                 abuse,
-		Alerts:                alerts,
-		ChannelHealthSamples:  channelHealthSamples,
+		UserKeys:             userKeys,
+		Costs:                costs,
+		Abuse:                abuse,
+		Alerts:               alerts,
+		ChannelHealthSamples: channelHealthSamples,
 		// 前端构建产物（web/dist）已通过根包的 go:embed 嵌入二进制
 		WebFS: aqua.WebDist,
 	})

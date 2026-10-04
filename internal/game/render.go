@@ -165,6 +165,17 @@ func itoa(v int) string {
 
 // RenderPNG 把局面渲染为 PNG 字节流。
 //
+// RenderBoardPNG 渲染当前局面（顶部信息条自动生成）。
+//
+// 与 RenderPNG 的关系：RenderPNG 需要调用方自己给 header，
+// 而"给模型看的图"与"给用户看的图"应当是同一种 header——
+// 因此提供一个统一入口，避免两处各拼一次 header 而慢慢不一致
+// （那会导致"用户看到的图"与"模型看到的图"不是同一张，
+// 而整个演示的说服力正建立在二者一致上）。
+func RenderBoardPNG(pos *Position) ([]byte, error) {
+	return RenderPNG(pos, renderHeader(pos))
+}
+
 // header 会画在顶部信息条上；调用方用它传递"棋种 / 该谁走 / 第几手"
 // 这类模型需要但图片本身表达不了的信息。
 func RenderPNG(pos *Position, header string) ([]byte, error) {

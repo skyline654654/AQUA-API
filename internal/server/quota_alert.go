@@ -236,15 +236,15 @@ func (s *Server) alertUserIfNeeded(ctx context.Context, userID uint64, siteName 
 	})
 
 	alert := &model.AlertNotification{
-		UserID:           userID,
-		Kind:             kind,
-		Severity:         alertSeverity(kind),
-		WindowBucket:     bucket,
-		Title:            subject,
-		Body:             body,
+		UserID:            userID,
+		Kind:              kind,
+		Severity:          alertSeverity(kind),
+		WindowBucket:      bucket,
+		Title:             subject,
+		Body:              body,
 		EstimatedDaysLeft: days,
-		Delivered:        0,
-		CreatedAt:        now,
+		Delivered:         0,
+		CreatedAt:         now,
 	}
 	if err := s.deps.Alerts.Create(ctx, alert); err != nil {
 		if errors.Is(err, model.ErrAlertAlreadySent) {
@@ -317,6 +317,7 @@ func alertSeverity(kind string) int {
 //   - 邮件会被删、被归进垃圾箱、也可能根本没送达；
 //     只靠邮件的预警在"用户真的需要知道"这件事上是不可靠的单一通道。
 //   - 用户问"为什么我收到这封邮件"时，需要一个能自查的入口。
+//
 // 注意这里返回的是邮件【正文的纯文本快照】而非 HTML：
 // 前端要展示成列表文案，直接塞 HTML 会有 XSS 风险。
 //
@@ -347,16 +348,16 @@ func (s *Server) handleMyAlerts(c *gin.Context) {
 	items := make([]gin.H, 0, len(alerts))
 	for _, a := range alerts {
 		items = append(items, gin.H{
-			"id":              a.ID,
-			"kind":            a.Kind,
-			"kind_text":       alertKindLabel(a.Kind),
-			"severity":        a.Severity,
-			"title":           a.Title,
-			"summary":         alertSummary(a),
-			"days_left":       a.EstimatedDaysLeft,
-			"delivered":       a.Delivered == 1,
-			"window_bucket":   a.WindowBucket,
-			"created_at":      a.CreatedAt.Unix(),
+			"id":            a.ID,
+			"kind":          a.Kind,
+			"kind_text":     alertKindLabel(a.Kind),
+			"severity":      a.Severity,
+			"title":         a.Title,
+			"summary":       alertSummary(a),
+			"days_left":     a.EstimatedDaysLeft,
+			"delivered":     a.Delivered == 1,
+			"window_bucket": a.WindowBucket,
+			"created_at":    a.CreatedAt.Unix(),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"alerts": items})

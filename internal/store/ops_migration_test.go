@@ -30,6 +30,8 @@ func TestMigrate_运营表与索引存在(t *testing.T) {
 		{"abuse_events", "盗 Key / 突发检测的事件留痕"},
 		{"channel_health_samples", "动态权重的 EWMA 输入桶"},
 		{"alert_notifications", "预警记录与冷却去重"},
+		{"game_matches", "对弈对局（含局面快照）"},
+		{"game_moves", "对弈棋谱（含模型原始输出）"},
 	}
 	for _, tbl := range tables {
 		var count int
@@ -55,6 +57,10 @@ func TestMigrate_运营表与索引存在(t *testing.T) {
 		{"idx_channel_health_channel_bucket", "采样桶唯一性（upsert 前提）"},
 		// 成本归因的聚合路径
 		{"idx_usage_logs_user_tag", "成本归因按 (用户, 标签) 聚合"},
+		// 唯一索引在这里不只是索引，它同时是"同一对局手数不重复"的约束——
+		// 并发推进时靠它挡住写出两个 seq=5 的着法（那会让复盘顺序错乱）。
+		{"idx_game_moves_match_seq", "对弈棋谱手数唯一（并发推进的防护）"},
+		{"idx_game_matches_user_created", "按用户查对局列表"},
 	}
 	for _, idx := range idxs {
 		var count int

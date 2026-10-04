@@ -74,10 +74,10 @@ type userKeyDTO struct {
 	FailCount     int   `json:"fail_count"`
 	CooldownUntil int64 `json:"cooldown_until"`
 	// CoolingDown 表示正处于熔断期（比 Status 更精确的"暂时不可用"）。
-	CoolingDown  bool   `json:"cooling_down"`
-	LastUsedAt   int64  `json:"last_used_at"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	CoolingDown bool  `json:"cooling_down"`
+	LastUsedAt  int64 `json:"last_used_at"`
+	CreatedAt   int64 `json:"created_at"`
+	UpdatedAt   int64 `json:"updated_at"`
 }
 
 // userKeyRequest 是新增/修改自备密钥的请求体。

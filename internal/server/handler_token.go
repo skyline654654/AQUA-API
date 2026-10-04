@@ -136,9 +136,9 @@ func (s *Server) handleMyDeleteToken(c *gin.Context) {
 // 否则他只能删除重建（而重建会换掉 key，旧代码立刻失效）。
 //
 // 安全边界（三条都必须成立，缺一拒绝对外暴露明文）：
-//  1) 必须登录且令牌归属当前用户（loadOwnedToken 已校验归属）；
-//  2) 仅在请求明确表达"我要看明文"时才返回（本接口的存在本身就是该表达）；
-//  3) 每次取明文都写一条审计日志（谁、取了哪把），让"明文被看过"可查。
+//  1. 必须登录且令牌归属当前用户（loadOwnedToken 已校验归属）；
+//  2. 仅在请求明确表达"我要看明文"时才返回（本接口的存在本身就是该表达）；
+//  3. 每次取明文都写一条审计日志（谁、取了哪把），让"明文被看过"可查。
 func (s *Server) handleMyTokenKey(c *gin.Context) {
 	user, ok := s.requireCurrentUser(c)
 	if !ok {
@@ -453,8 +453,8 @@ func (s *Server) resolveTokenGroupName(c *gin.Context, raw string, ownerID uint6
 // 所以必须有一道服务端闸门把"能自助拿到"这件事本身关掉。
 //
 // 放行的两种情况（都与"自助拿到"不相容，因此不破坏定价体系）：
-//  1) 发起人是管理员：后台"代客户建令牌"，令牌归到客户名下；
-//  2) 归属用户已被管理员显式指派到该分组（users.agent_group == group.Name）：
+//  1. 发起人是管理员：后台"代客户建令牌"，令牌归到客户名下；
+//  2. 归属用户已被管理员显式指派到该分组（users.agent_group == group.Name）：
 //     指派动作本身就是后台授权，"这个人可以用这一档"已被管理员确认过。
 //
 // 注意判据是【归属用户自己的 agent_group】，不能放宽成"任意代理分组"：

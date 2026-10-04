@@ -112,6 +112,13 @@ type Deps struct {
 	// 它是"能否看到密钥还剩多少"的前提——没有进价，消耗无从估算。
 	ChannelModelCosts model.ChannelModelCostRepository
 
+	// GameMatches 是对弈对局与棋谱仓储。
+	//
+	// 对弈是"用图片让模型下棋"的可视化演示：对局要跨多次请求推进
+	// （每手一次模型调用），因此必须持久化——刷新页面、断线后能续上，
+	// 棋谱也是演示的产物本身（模型哪一手走错了正是用户想看的结论）。
+	GameMatches model.GameMatchRepository
+
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository
 	// Mailer 是出站邮件发送器；未配置时验证码接口会返回明确的"邮件服务未配置"提示，

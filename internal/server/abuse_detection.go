@@ -299,17 +299,17 @@ func (s *Server) handleListAbuseEvents(c *gin.Context) {
 	items := make([]gin.H, 0, len(events))
 	for _, e := range events {
 		items = append(items, gin.H{
-			"id":        e.ID,
-			"user_id":   e.UserID,
-			"username":  usernames[e.UserID],
-			"token_id":  e.TokenID,
-			"kind":      e.Kind,
-			"kind_text": abuseKindLabel(e.Kind),
-			"severity":  e.Severity,
-			"action":    e.Action,
-			"detail":    e.Detail,
-			"metric":    e.Metric,
-			"threshold": e.Threshold,
+			"id":         e.ID,
+			"user_id":    e.UserID,
+			"username":   usernames[e.UserID],
+			"token_id":   e.TokenID,
+			"kind":       e.Kind,
+			"kind_text":  abuseKindLabel(e.Kind),
+			"severity":   e.Severity,
+			"action":     e.Action,
+			"detail":     e.Detail,
+			"metric":     e.Metric,
+			"threshold":  e.Threshold,
 			"created_at": e.CreatedAt.Unix(),
 		})
 	}

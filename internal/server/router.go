@@ -178,6 +178,21 @@ func (s *Server) registerRoutes() {
 	// 静态段 "recommend" 与通配段 ":model" 争同一层路由树位置
 	// （gin 基于 httprouter，同层混用静态与通配会 panic）。
 	portal.GET("/recommend/models", s.handleRecommendModels)
+	// ── 对弈演示（多模态：棋盘以图片发给模型）────────────────────
+	//
+	// 路径用 /games 而不是 /arena：前者是资源名（一局棋），
+	// 后者是场地名，不符合 REST 的资源语义。
+	//
+	// 注意 /games/:id/board.png 与 /games/:id 不冲突（前者多一层静态段），
+	// gin 的路由树可以正确处理这种情况。
+	portal.POST("/games", s.handleCreateGame)
+	portal.GET("/games", s.handleListGames)
+	portal.GET("/games/:id", s.handleGetGame)
+	portal.DELETE("/games/:id", s.handleDeleteGame)
+	// 推进一手：人类落子与 AI 走子共用此端点，由当前轮次决定走哪条路径。
+	portal.POST("/games/:id/step", s.handleStepGame)
+	// 取当前局面的图片（即模型看到的那一张），供前端如实展示。
+	portal.GET("/games/:id/board.png", s.handleGameBoard)
 	// 异步任务（用户只能看自己的）
 	portal.GET("/tasks", s.handleMyListTasks)
 

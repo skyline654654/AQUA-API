@@ -22,10 +22,10 @@ func timeAt(y int, m time.Month, d, h, min, s int) time.Time {
 
 func TestEstimateDaysLeft_NormalCases(t *testing.T) {
 	tests := []struct {
-		name         string
-		remain       int64
-		daily        int64
-		want         int
+		name   string
+		remain int64
+		daily  int64
+		want   int
 	}{
 		{"整除：1000余额/100每天= 10 天", 1000, 100, 10},
 		{"不整除向上取整：1000/300 = 4 天", 1000, 300, 4},
