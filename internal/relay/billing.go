@@ -775,6 +775,32 @@ func (b *Billing) EstimateReserve(ctx context.Context, group, modelName string, 
 	return amount, true
 }
 
+// IsFreeForChannel 判断该 (分组, 模型, 渠道) 下的一次调用是否【不计费】。
+//
+// 判定与 EstimateReserve 的 priced 严格同源（未命中规则 → 免费；规则显式免费 → 免费），
+// 并要求两者永远一致：若不一致，会出现"计费时按收费处理、排行榜却算免费"
+// 这种自相矛盾的口径分裂，前后台的数字对不上。
+//
+// 为什么需要一个独立方法而不是复用 EstimateReserve：
+//
+//	EstimateReserve 需要 promptBytes 且会做 token 估算（有成本、且对"是否计费"
+//	这个布尔问题毫无必要）。记录日志时只想问"这算不算计费"，直接问这个。
+//
+// channelID 传 model.ChannelScopeAll 表示只看分组默认价。
+func (b *Billing) IsFreeForChannel(ctx context.Context, group, modelName string, channelID uint64) bool {
+	if b == nil {
+		// 未注入计费组件：无法判定，按"不计费"处理。
+		// 反过来（默认按计费）会让"没配计费"的部署在榜上凭空多出一个计费榜，
+		// 而免费榜才是那种部署的真实情形。
+		return true
+	}
+	price := b.priceForChannel(ctx, group, modelName, channelID)
+	if price == nil {
+		return true
+	}
+	return price.IsFree()
+}
+
 // Reserve 预扣额度（幂等）。
 //
 // 未注入台账时返回 (nil, nil)：表示"不做预留"，调用方应退化为响应后扣费。

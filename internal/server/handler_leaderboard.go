@@ -3,10 +3,20 @@
 // 意图（Why）：
 //
 //	门户概览页的图表下方需要一张"谁在用、用了多少"的榜单，
-//	让站长与用户一眼看出活跃度分布。拆成付费 / 免费两个榜单：
-//	  - 付费用户（有已支付订单）与免费用户的使用强度差异巨大，
-//	    混排会让免费榜永远被付费用户占据，失去"免费活跃度"的观察价值；
-//	  - 两个榜单共用同一套分数口径，便于横向对比。
+//	让站长与用户一眼看出活跃度分布。拆成计费 / 免费两个榜单。
+//
+//	★ 分榜口径是【请求是否计费】，不是"用户是否充过值"。
+//	  早期实现按人分类，导致同一个人的免费调用与计费调用被整体归到某一个榜，
+//	  两榜的统计基数相互重叠（免费榜混着计费流量、计费榜混着免费流量），
+//	  "免费流量到底有多大"这个最该由免费榜回答的问题反而答不出来。
+//	  改为按请求分类后：一次调用只属于一个榜，
+//	  「两榜请求数之和 = 全站请求数」成立，两榜各自可解释。
+//
+//	  同一用户可能同时出现在两榜（既用过免费模型也用过计费模型）——
+//	  这是正确行为，两榜各自的数字互斥、不会重复计数。
+//
+//	  "是否计费"由计费层在转发时判定并落库（usage_logs.billing_free），
+//	  口径与 Billing.EstimateReserve 同源，聚合时不做二次推断。
 //
 // 流转（Flow）：
 //
@@ -21,6 +31,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -134,18 +145,30 @@ func (s *Server) handleLeaderboard(c *gin.Context) {
 		topN = 0 // 0 表示不截断
 	}
 
-	paid := make([]model.LeaderboardEntry, 0)
+	// 按【请求是否计费】拆榜（维度来自 usage_logs.billing_free）。
+	// 每条聚合行只属于一个榜，因此两榜天然互斥、不会互相污染。
+	billed := make([]model.LeaderboardEntry, 0)
 	free := make([]model.LeaderboardEntry, 0)
 	for _, entry := range entries {
-		if entry.Paid {
-			paid = append(paid, entry)
-		} else {
+		if entry.BillingFree {
 			free = append(free, entry)
+		} else {
+			billed = append(billed, entry)
 		}
 	}
 
-	paidDTO := s.buildLeaderboardSection(paid, user.ID, topN)
+	billedDTO := s.buildLeaderboardSection(billed, user.ID, topN)
 	freeDTO := s.buildLeaderboardSection(free, user.ID, topN)
+
+	// 两榜各自的请求数合计：用于向用户证明"两榜之和 = 全站"，
+	// 也让"免费流量占比"这一最有用的问题有现成答案。
+	var billedRequests, freeRequests int64
+	for _, e := range billed {
+		billedRequests += e.Requests
+	}
+	for _, e := range free {
+		freeRequests += e.Requests
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"range_days": days,
@@ -157,10 +180,31 @@ func (s *Server) handleLeaderboard(c *gin.Context) {
 			"success_rate": agg.summary.SuccessRate(),
 			"users":        len(entries),
 		},
-		"paid":       paidDTO,
-		"free":       freeDTO,
+		// billed = 计费请求榜，free = 免费请求榜。
+		// 命名从 paid 改为 billed：分类的是【请求是否计费】，不是"用户是否付费"，
+		// 沿用 paid 会让后来者误以为它是"付费用户榜"而重犯按人分类的错误。
+		"billed": billedDTO,
+		"free":   freeDTO,
+		// 两榜请求数合计（互斥，相加即全站），供前端展示口径与占比。
+		"split": gin.H{
+			"billed_requests": billedRequests,
+			"free_requests":   freeRequests,
+		},
 		"updated_at": until.Unix(),
 	})
+}
+
+// leaderboardRowKey 返回榜单项的稳定唯一键。
+//
+// 定长零填充（%020d）而不是直接 %d：score 包在同分时用 ID 做字典序 tie-break，
+// 不做填充会让 "10|0" 排在 "9|0" 之前（字符串比较），使同分用户的名次顺序
+// 与直觉相反。填充后字典序等价于数值序，tie-break 结果符合预期。
+func leaderboardRowKey(entry model.LeaderboardEntry) string {
+	free := 0
+	if entry.BillingFree {
+		free = 1
+	}
+	return fmt.Sprintf("%020d|%d", entry.UserID, free)
 }
 
 // buildLeaderboardSection 对一组成绩评分、排序、截断并计算当前用户名次。
@@ -177,11 +221,19 @@ func (s *Server) buildLeaderboardSection(entries []model.LeaderboardEntry, myUse
 		return section
 	}
 
-	// 组装评分输入（ID 传用户名：榜单展示的就是账号 ID）。
+	// 组装评分输入。
+	//
+	// ★ 键必须用 (用户ID, 是否计费)，【不能】用用户名：
+	//   用户名来自 LEFT JOIN users，当 usage_logs 里的 user_id 没有对应用户行
+	//   （用户被删除、或历史数据）时会被 COALESCE 成一个空串。此时所有这类用户的
+	//   键全部相同 → 评分函数收到一批重复 ID、反查表只剩最后一条，
+	//   表现为"同一个名字在榜上重复出现、其他用户凭空消失"。
+	//   这个缺陷与本次的分榜口径问题叠加在一起，很难从界面上分辨是哪一处引起的，
+	//   因此一并修掉：用主键级别的 (user_id, 是否计费) 作键，天然唯一。
 	inputs := make([]score.Entry, 0, len(entries))
 	for _, entry := range entries {
 		inputs = append(inputs, score.Entry{
-			ID:       entry.Username,
+			ID:       leaderboardRowKey(entry),
 			Tokens:   float64(entry.Tokens),
 			Requests: float64(entry.Requests),
 		})
@@ -190,10 +242,10 @@ func (s *Server) buildLeaderboardSection(entries []model.LeaderboardEntry, myUse
 	// 动态评分：全量重算，不做增量更新（增量会让锚点与实际数据脱节）。
 	result := score.ScoreBoard(inputs)
 
-	// 分数 → 用户 ID 的反查表（score 包只认 ID 字符串，不知道 user_id）。
+	// 分数行 → 榜单项的反查表，键与上面完全一致。
 	scoreToEntry := make(map[string]model.LeaderboardEntry, len(result.Rows))
 	for _, entry := range entries {
-		scoreToEntry[entry.Username] = entry
+		scoreToEntry[leaderboardRowKey(entry)] = entry
 	}
 
 	// 我的名次：无论是否被截断都要能回答"我排第几"。

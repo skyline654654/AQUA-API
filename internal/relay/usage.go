@@ -540,6 +540,14 @@ func (r *Relay) recordUsage(ctx context.Context, entry usageEntry) {
 	// 使日后改价后旧账仍可按当时的定价复算。取价与 settleQuota 同源（渠道专用价优先）。
 	if r.billing != nil {
 		logEntry.PriceVersion = r.billing.PriceVersionForChannel(writeCtx, entry.Group, entry.Model, entry.ChannelID)
+		// 记录"本次是否计费"：排行榜按它分设计费榜 / 免费榜。
+		// 判定必须与计费的 priced 口径同源（见 Billing.IsFreeForChannel），
+		// 否则会出现"收费了却记成免费"的口径分裂。
+		logEntry.BillingFree = r.billing.IsFreeForChannel(writeCtx, entry.Group, entry.Model, entry.ChannelID)
+	} else {
+		// 未注入计费组件（仅统计不限制的部署形态）：没有计费概念，
+		// 一律记为免费，与 IsFreeForChannel 的降级口径保持一致。
+		logEntry.BillingFree = true
 	}
 
 	if err := r.usageLogs.Create(writeCtx, logEntry); err != nil {

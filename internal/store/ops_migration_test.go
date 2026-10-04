@@ -61,6 +61,8 @@ func TestMigrate_运营表与索引存在(t *testing.T) {
 		// 并发推进时靠它挡住写出两个 seq=5 的着法（那会让复盘顺序错乱）。
 		{"idx_game_moves_match_seq", "对弈棋谱手数唯一（并发推进的防护）"},
 		{"idx_game_matches_user_created", "按用户查对局列表"},
+		// 排行榜按 (是否计费, 用户, 时间) 聚合，前导列决定两个榜能否各走一次区间扫描。
+		{"idx_usage_logs_free_user_created", "排行榜按 (是否计费, 用户) 分榜聚合"},
 	}
 	for _, idx := range idxs {
 		var count int
@@ -70,6 +72,26 @@ func TestMigrate_运营表与索引存在(t *testing.T) {
 		}
 		if count != 1 {
 			t.Errorf("索引 %s 未创建（%s）", idx.name, idx.why)
+		}
+	}
+}
+
+// TestMigrate_usage_logs含计费标记列 验证排行榜分榜所依赖的 billing_free 列已就位。
+//
+// 这一列是"按请求分榜"的地基：缺了它，排行榜只能退回去用 quota 反推，
+// 而反推会把失败的计费请求与 BYOK 调用误判为免费（详见迁移 0055 的说明）。
+func TestMigrate_usage_logs含计费标记列(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	rows, err := st.DB().QueryContext(ctx, "SELECT billing_free FROM usage_logs LIMIT 1")
+	if err != nil {
+		t.Fatalf("查询 usage_logs.billing_free 失败（迁移 0055 未应用？）: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			t.Fatalf("遍历 usage_logs 失败: %v", err)
 		}
 	}
 }

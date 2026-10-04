@@ -76,11 +76,11 @@ func TestPeakConcurrency_Basic(t *testing.T) {
 	}
 }
 
-// TestLeaderboard_SuccessOnlyAndPaidSplit 验证排行榜的三大口径：
-//  1. 只统计成功请求（500 的失败请求不出现在任何榜单）；
-//  2. 付费用户（有已支付订单）进付费榜，否则进免费榜；
+// TestLeaderboard_SuccessOnlyAndBillingSplit 验证排行榜的三大口径：
+//  1. 请求数统计【全部】请求（含失败），成功率单独反映稳定性；
+//  2. 按【请求是否计费】聚合：同一用户的免费与计费请求各成一行，互不混合；
 //  3. 请求数 / token 聚合正确。
-func TestLeaderboard_SuccessOnlyAndPaidSplit(t *testing.T) {
+func TestLeaderboard_SuccessOnlyAndBillingSplit(t *testing.T) {
 	st := newTestStore(t)
 	repo := NewUsageLogRepository(st.DB(), st.Dialect())
 	ctx := context.Background()
@@ -88,111 +88,177 @@ func TestLeaderboard_SuccessOnlyAndPaidSplit(t *testing.T) {
 	since := now.AddDate(0, 0, -30)
 	until := now.Add(time.Hour)
 
-	userID := uint64(42)
-	paidUserID := uint64(7)
+	freeUserID := uint64(42)  // 只用免费模型
+	billedUserID := uint64(7) // 只用计费模型
 
-	// 免费用户：2 次成功 + 1 次失败
-	createLog(t, repo, userID, now.Add(-time.Hour), 200, 100, 80) // 成功 token=100
-	createLog(t, repo, userID, now.Add(-2*time.Hour), 200, 200, 120)
-	createLog(t, repo, userID, now.Add(-3*time.Hour), 500, 999, 10) // 失败：请求数计入、token 计入、成功率扣分
+	// 免费用户：2 次成功 + 1 次失败，全部为免费调用
+	createLogWithBilling(t, repo, freeUserID, now.Add(-time.Hour), 200, 100, 80, true)
+	createLogWithBilling(t, repo, freeUserID, now.Add(-2*time.Hour), 200, 200, 120, true)
+	createLogWithBilling(t, repo, freeUserID, now.Add(-3*time.Hour), 500, 999, 10, true)
 
-	// 付费用户：1 次成功
-	createLog(t, repo, paidUserID, now.Add(-time.Hour), 200, 300, 60)
-
-	// 标记付费：写入一条已支付订单（status=2, credited=1）
-	createPaidOrder(t, st, paidUserID)
+	// 计费用户：1 次成功，计费调用
+	createLogWithBilling(t, repo, billedUserID, now.Add(-time.Hour), 200, 300, 60, false)
 
 	entries, err := repo.Leaderboard(ctx, model.UsageLogQuery{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Leaderboard 失败: %v", err)
 	}
-
 	if len(entries) != 2 {
 		t.Fatalf("榜单条目数 = %d，期望 2（两个用户各一条）", len(entries))
 	}
 
-	// 免费用户校验
-	var freeEntry *model.LeaderboardEntry
-	var paidEntry *model.LeaderboardEntry
+	var freeEntry, billedEntry *model.LeaderboardEntry
 	for i := range entries {
-		switch entries[i].UserID {
-		case userID:
+		switch {
+		case entries[i].UserID == freeUserID && entries[i].BillingFree:
 			freeEntry = &entries[i]
-		case paidUserID:
-			paidEntry = &entries[i]
+		case entries[i].UserID == billedUserID && !entries[i].BillingFree:
+			billedEntry = &entries[i]
 		}
 	}
 	if freeEntry == nil {
-		t.Fatal("未找到免费用户的榜单条目")
+		t.Fatal("未找到免费请求的榜单条目")
 	}
-	if freeEntry.Paid {
-		t.Error("免费用户被错误标记为付费")
+	if billedEntry == nil {
+		t.Fatal("未找到计费请求的榜单条目")
 	}
-	// 新口径：请求数统计全部请求（含失败），成功率单独反映稳定性
+
+	// 免费请求行：请求数统计全部请求（含失败），成功率单独反映稳定性
 	if freeEntry.Requests != 3 {
-		t.Errorf("免费用户请求数 = %d，期望 3（含失败请求）", freeEntry.Requests)
+		t.Errorf("免费请求数 = %d，期望 3（含失败请求）", freeEntry.Requests)
 	}
 	if freeEntry.SuccessRequests != 2 {
-		t.Errorf("免费用户成功请求数 = %d，期望 2", freeEntry.SuccessRequests)
+		t.Errorf("免费成功请求数 = %d，期望 2", freeEntry.SuccessRequests)
 	}
 	if rate := freeEntry.SuccessRate(); rate < 0.66 || rate > 0.67 {
-		t.Errorf("免费用户成功率 = %v，期望约 0.667（2/3）", rate)
+		t.Errorf("免费请求成功率 = %v，期望约 0.667（2/3）", rate)
 	}
 	if freeEntry.Tokens != 1299 {
-		t.Errorf("免费用户 token = %d，期望 1299（全部请求累计）", freeEntry.Tokens)
+		t.Errorf("免费 token = %d，期望 1299（全部请求累计）", freeEntry.Tokens)
 	}
 	// 平均耗时只按成功请求计算（失败请求耗时不可信）
 	if freeEntry.AvgLatencyMS != 100 {
 		// (80+120)/2 = 100
-		t.Errorf("免费用户平均耗时 = %v，期望 100（仅成功请求）", freeEntry.AvgLatencyMS)
+		t.Errorf("免费请求平均耗时 = %v，期望 100（仅成功请求）", freeEntry.AvgLatencyMS)
 	}
 
 	// 分数封顶 100：榜首（各项最大）应为 100 分
-	score := freeEntry.LeaderboardScore(freeEntry.Requests, freeEntry.Tokens)
-	if score != 100 {
+	if score := freeEntry.LeaderboardScore(freeEntry.Requests, freeEntry.Tokens); score != 100 {
 		t.Errorf("榜首分数 = %v，期望 100（0~100 封顶）", score)
 	}
 
-	// 付费用户 1 次成功：请求 1、成功率 100%
-	if paidEntry.Requests != 1 || paidEntry.SuccessRequests != 1 {
-		t.Errorf("付费用户聚合错误: requests=%d success=%d", paidEntry.Requests, paidEntry.SuccessRequests)
+	// 计费请求行：1 次成功
+	if billedEntry.Requests != 1 || billedEntry.SuccessRequests != 1 {
+		t.Errorf("计费请求聚合错误: requests=%d success=%d", billedEntry.Requests, billedEntry.SuccessRequests)
 	}
-	if rate := paidEntry.SuccessRate(); rate != 1 {
-		t.Errorf("付费用户成功率 = %v，期望 1（全成功）", rate)
+	if rate := billedEntry.SuccessRate(); rate != 1 {
+		t.Errorf("计费请求成功率 = %v，期望 1（全成功）", rate)
 	}
-	if !paidEntry.Paid {
-		t.Error("有已支付订单的用户应标记为付费")
-	}
-	if paidEntry.Tokens != 300 {
-		t.Errorf("付费用户 token = %d，期望 300", paidEntry.Tokens)
+	if billedEntry.Tokens != 300 {
+		t.Errorf("计费 token = %d，期望 300", billedEntry.Tokens)
 	}
 }
 
-// TestLeaderboard_PeakConcurrency 验证同名用户在窗口内的峰值并发估算。
-func TestLeaderboard_PeakConcurrency(t *testing.T) {
+// TestLeaderboard_同一用户的免费与计费请求互斥分列 是本文件最关键的一条。
+//
+// 意图（Why）：
+//
+//	这正是本次修复要解决的问题：旧口径按"用户是否充过值"分类，
+//	同一个人的免费调用与计费调用会被整体归到同一个榜，两榜的统计基数相互重叠。
+//	新口径按【请求是否计费】分类，因此：
+//	  · 同一用户会在两榜各占一行；
+//	  · 两行各自的请求数与 token 【互斥】，相加正好等于该用户的全部用量；
+//	  · 不会出现"同一笔请求被两个榜各算一次"。
+//
+//	断言用"相加等于总量"而不是"两行都存在"——后者无法证明不重复计数。
+func TestLeaderboard_同一用户的免费与计费请求互斥分列(t *testing.T) {
 	st := newTestStore(t)
 	repo := NewUsageLogRepository(st.DB(), st.Dialect())
 	ctx := context.Background()
 	now := time.Now()
-	since := now.AddDate(0, 0, -7)
+	since := now.AddDate(0, 0, -30)
 	until := now.Add(time.Hour)
-	userID := uint64(99)
 
-	// 构造三个重叠区间：base=now-500s
-	//  A: [T,   T+20]   => created_at = T+20, latency = 20000ms
-	//  B: [T+10,T+40]  => created_at = T+40, latency = 30000ms
-	//  C: [T+30,T+50]  => created_at = T+50, latency = 20000ms
-	//  A 与 B 重叠（T+10~T+20），B 与 C 重叠（T+30~T+40），峰值 2。
-	base := now.Add(-500 * time.Second).Unix()
-	logs := []*model.UsageLog{
-		{UserID: userID, ChannelID: 1, Model: "m", TotalTokens: 1, StatusCode: 200, LatencyMS: 20000, CreatedAt: time.Unix(base+20, 0)},
-		{UserID: userID, ChannelID: 1, Model: "m", TotalTokens: 1, StatusCode: 200, LatencyMS: 30000, CreatedAt: time.Unix(base+40, 0)},
-		{UserID: userID, ChannelID: 1, Model: "m", TotalTokens: 1, StatusCode: 200, LatencyMS: 20000, CreatedAt: time.Unix(base+50, 0)},
+	userID := uint64(99)
+	// 3 笔计费（token 100/200/300）+ 2 笔免费（token 10/20）
+	createLogWithBilling(t, repo, userID, now.Add(-1*time.Hour), 200, 100, 50, false)
+	createLogWithBilling(t, repo, userID, now.Add(-2*time.Hour), 200, 200, 50, false)
+	createLogWithBilling(t, repo, userID, now.Add(-3*time.Hour), 200, 300, 50, false)
+	createLogWithBilling(t, repo, userID, now.Add(-4*time.Hour), 200, 10, 50, true)
+	createLogWithBilling(t, repo, userID, now.Add(-5*time.Hour), 200, 20, 50, true)
+
+	entries, err := repo.Leaderboard(ctx, model.UsageLogQuery{Since: &since, Until: &until})
+	if err != nil {
+		t.Fatalf("Leaderboard 失败: %v", err)
 	}
-	for _, l := range logs {
-		if err := repo.Create(ctx, l); err != nil {
-			t.Fatalf("写入日志失败: %v", err)
+	if len(entries) != 2 {
+		t.Fatalf("同一用户应产生两行（计费一行 + 免费一行），实际 %d 行", len(entries))
+	}
+
+	var billed, free *model.LeaderboardEntry
+	for i := range entries {
+		if entries[i].BillingFree {
+			free = &entries[i]
+		} else {
+			billed = &entries[i]
 		}
+	}
+	if billed == nil || free == nil {
+		t.Fatal("应同时存在计费行与免费行")
+	}
+
+	if billed.Requests != 3 || billed.Tokens != 600 {
+		t.Errorf("计费行 = %d 请求 / %d token，期望 3 / 600", billed.Requests, billed.Tokens)
+	}
+	if free.Requests != 2 || free.Tokens != 30 {
+		t.Errorf("免费行 = %d 请求 / %d token，期望 2 / 30", free.Requests, free.Tokens)
+	}
+	// 互斥性的量化保证：两行相加 == 该用户的全部用量（5 笔 / 630 token）
+	if got := billed.Requests + free.Requests; got != 5 {
+		t.Errorf("两榜请求数之和 = %d，期望 5（必须等于实际总请求数，不能重复计数）", got)
+	}
+	if got := billed.Tokens + free.Tokens; got != 630 {
+		t.Errorf("两榜 token 之和 = %d，期望 630", got)
+	}
+}
+
+// TestLeaderboard_失败与BYOK不算作免费 验证"是否计费"不靠 quota 反推。
+//
+// 旧思路会用 quota > 0 判定计费，但那会把两类调用误判成免费：
+//
+//	· 失败的计费请求（额度已全额退还，quota = 0）；
+//	· BYOK 调用（用户用自己的上游额度付过钱，站内 quota = 0）。
+//
+// 两者都会让"免费流量"被高估。因此本测试特意构造"计费但 quota=0"的记录，
+// 断言它仍落在计费行、而不是被算成免费。
+func TestLeaderboard_失败与BYOK不算作免费(t *testing.T) {
+	st := newTestStore(t)
+	repo := NewUsageLogRepository(st.DB(), st.Dialect())
+	ctx := context.Background()
+	now := time.Now()
+	since := now.AddDate(0, 0, -30)
+	until := now.Add(time.Hour)
+
+	userID := uint64(123)
+	// 计费但失败（quota = 0，真实场景里额度已退还）
+	entry := &model.UsageLog{
+		UserID: userID, ChannelID: 1, Model: "gpt-4o",
+		TotalTokens: 500, StatusCode: 500, LatencyMS: 30,
+		Quota: 0, BillingFree: false, // 计费模型 → 即使 quota=0 也不是免费
+		CreatedAt: now.Add(-time.Hour),
+	}
+	if err := repo.Create(ctx, entry); err != nil {
+		t.Fatalf("写入日志失败: %v", err)
+	}
+	// BYOK：站内不扣费（quota = 0），但该模型本身是计费模型 → 仍算计费
+	buyok := &model.UsageLog{
+		UserID: userID, ChannelID: 0, Model: "gpt-4o",
+		TotalTokens: 200, StatusCode: 200, LatencyMS: 30,
+		Quota: 0, BillingFree: false,
+		CreatedAt: now.Add(-2 * time.Hour),
+	}
+	if err := repo.Create(ctx, buyok); err != nil {
+		t.Fatalf("写入日志失败: %v", err)
 	}
 
 	entries, err := repo.Leaderboard(ctx, model.UsageLogQuery{Since: &since, Until: &until})
@@ -200,15 +266,27 @@ func TestLeaderboard_PeakConcurrency(t *testing.T) {
 		t.Fatalf("Leaderboard 失败: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("条目数 = %d，期望 1", len(entries))
+		t.Fatalf("应只有一行（全部为计费请求），实际 %d 行", len(entries))
 	}
-	if entries[0].PeakConcurrency != 2 {
-		t.Errorf("峰值并发 = %d，期望 2", entries[0].PeakConcurrency)
+	if entries[0].BillingFree {
+		t.Error("计费模型上的失败请求与 BYOK 调用被误判为免费（不能用 quota 反推）")
+	}
+	if entries[0].Requests != 2 {
+		t.Errorf("计费请求数 = %d，期望 2", entries[0].Requests)
 	}
 }
 
-// createLog 写入一条指定时间/状态/token/耗时的日志。
 func createLog(t *testing.T, repo model.UsageLogRepository, userID uint64, at time.Time, status int, tokens int, latency int) {
+	t.Helper()
+	createLogWithBilling(t, repo, userID, at, status, tokens, latency, false)
+}
+
+// createLogWithBilling 写入一条带"是否计费"标记的日志。
+//
+// billingFree 传 true 表示这次调用走的是免费模型（未命中计价规则或规则显式免费）。
+// 该标记由计费层在转发时写入，因此这里直接构造而不是靠 quota 反推——
+// 反推会把失败请求与 BYOK 误判为免费（见 TestLeaderboard_失败与BYOK不算作免费）。
+func createLogWithBilling(t *testing.T, repo model.UsageLogRepository, userID uint64, at time.Time, status int, tokens int, latency int, billingFree bool) {
 	t.Helper()
 	entry := &model.UsageLog{
 		UserID:      userID,
@@ -217,6 +295,7 @@ func createLog(t *testing.T, repo model.UsageLogRepository, userID uint64, at ti
 		TotalTokens: tokens,
 		StatusCode:  status,
 		LatencyMS:   latency,
+		BillingFree: billingFree,
 		CreatedAt:   at,
 	}
 	if err := repo.Create(context.Background(), entry); err != nil {

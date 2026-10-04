@@ -44,7 +44,7 @@ const defaultSeriesDays = 7
 // usageLogColumns 集中定义查询列，顺序必须与 scanUsageLog 的扫描顺序严格一致。
 const usageLogColumns = `id, user_id, token_id, channel_id, channel_key_id, model, upstream_model, prompt_tokens, completion_tokens,
 	total_tokens, cached_tokens, reasoning_tokens, first_token_ms, tokens_per_second,
-	quota, latency_ms, is_stream, status_code, error, request_id, price_version, tag, created_at`
+	quota, latency_ms, is_stream, status_code, error, request_id, price_version, billing_free, tag, created_at`
 
 // usageLogRepository 是 model.UsageLogRepository 的 SQL 实现，并发安全。
 type usageLogRepository struct {
@@ -72,13 +72,14 @@ func (r *usageLogRepository) Create(ctx context.Context, log *model.UsageLog) er
 		INSERT INTO usage_logs
 			(user_id, token_id, channel_id, channel_key_id, model, upstream_model, prompt_tokens, completion_tokens, total_tokens,
 			 cached_tokens, reasoning_tokens, first_token_ms, tokens_per_second,
-			 quota, latency_ms, is_stream, status_code, error, request_id, price_version, tag, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 quota, latency_ms, is_stream, status_code, error, request_id, price_version, billing_free, tag, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.UserID, log.TokenID, log.ChannelID, log.ChannelKeyID, log.Model, log.UpstreamModel,
 		log.PromptTokens, log.CompletionTokens, log.TotalTokens,
 		log.CachedTokens, log.ReasoningTokens, log.FirstTokenMS, log.TokensPerSecond,
 		log.Quota, log.LatencyMS, boolToInt(log.IsStream), log.StatusCode,
-		log.Error, log.RequestID, log.PriceVersion, model.NormalizeTag(log.Tag), log.CreatedAt.Unix(),
+		log.Error, log.RequestID, log.PriceVersion, boolToInt(log.BillingFree),
+		model.NormalizeTag(log.Tag), log.CreatedAt.Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: 写入调用日志失败: %w", err)
@@ -368,18 +369,21 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 	flatConditions = append(flatConditions, "status_code >= 200", "status_code < 400", "user_id > 0")
 	flatFilter := strings.Join(flatConditions, " AND ")
 
+	// 分榜维度是 u.billing_free（本次调用是否计费），不是"用户是否充过值"——
+	// 见 model.LeaderboardEntry.BillingFree 的说明。因此 GROUP BY 必须带上它，
+	// 同一个用户会得到两行（免费一行、计费一行），各自只含自己那部分请求。
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT u.user_id,
+		       u.billing_free,
 		       COALESCE(SUM(u.total_tokens), 0),
 		       COALESCE(AVG(CASE WHEN u.status_code >= 200 AND u.status_code < 400 THEN u.latency_ms END), 0),
 		       COUNT(1),
 		       COALESCE(SUM(CASE WHEN u.status_code >= 200 AND u.status_code < 400 THEN 1 ELSE 0 END), 0),
-		       COALESCE(us.username, ''),
-		       EXISTS(SELECT 1 FROM payment_orders po WHERE po.user_id = u.user_id AND po.status = 2) AS paid
+		       COALESCE(us.username, '')
 		FROM usage_logs u
 		LEFT JOIN users us ON us.id = u.user_id
 		WHERE `+joinFilter+`
-		GROUP BY u.user_id, us.username, paid`,
+		GROUP BY u.user_id, u.billing_free, us.username`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: 排行榜聚合查询失败: %w", err)
@@ -391,21 +395,23 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 		entry  model.LeaderboardEntry
 		events []usageEvent
 	}
-	byUser := make(map[uint64]*rowSample)
+	byUser := make(map[leaderboardKey]*rowSample)
 	for rows.Next() {
 		var (
 			userID      uint64
+			billingFree int
 			tokens      int64
 			avgLatency  float64
 			requests    int64
 			successReqs int64
 			username    string
-			paid        bool
 		)
-		if err := rows.Scan(&userID, &tokens, &avgLatency, &requests, &successReqs, &username, &paid); err != nil {
+		if err := rows.Scan(&userID, &billingFree, &tokens, &avgLatency, &requests, &successReqs, &username); err != nil {
 			return nil, fmt.Errorf("store: 读取排行榜聚合结果失败: %w", err)
 		}
-		byUser[userID] = &rowSample{
+		// 键是 (用户, 是否计费) 而不是用户：同一用户在两榜各有一行数据，
+		// 只用 user_id 作键会让后读到的行覆盖前一行（表现为"免费榜里少了一批人"）。
+		byUser[leaderboardKey{userID: userID, billingFree: billingFree != 0}] = &rowSample{
 			entry: model.LeaderboardEntry{
 				UserID:          userID,
 				Username:        username,
@@ -413,7 +419,7 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 				SuccessRequests: successReqs,
 				Tokens:          tokens,
 				AvgLatencyMS:    avgLatency,
-				Paid:            paid,
+				BillingFree:     billingFree != 0,
 			},
 			events: make([]usageEvent, 0, int(requests)),
 		}
@@ -425,11 +431,13 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 	// 第二遍：拉取每用户成功请求的 (created_at, latency_ms)，供并发扫描。
 	// 单独查询而非 JOIN 进上面的大查询：避免结果集膨胀（每行带全部区间事件），
 	// 且这里只需要两列，SQLite 扫描更轻。单表查询用无前缀的 flatFilter。
+	// 并发样本同样要带 billing_free：峰值并发是"某一榜内部"的指标，
+	// 不带这个维度会把免费与计费的区间混在一起算，两榜的峰值都会虚高。
 	eventRows, err := r.db.QueryContext(ctx, `
-		SELECT user_id, created_at, latency_ms
+		SELECT user_id, billing_free, created_at, latency_ms
 		FROM usage_logs
 		WHERE `+flatFilter+`
-		ORDER BY user_id, created_at`,
+		ORDER BY user_id, billing_free, created_at`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: 排行榜并发样本查询失败: %w", err)
@@ -438,14 +446,15 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 
 	for eventRows.Next() {
 		var (
-			userID  uint64
-			created int64
-			latency int
+			userID      uint64
+			billingFree int
+			created     int64
+			latency     int
 		)
-		if err := eventRows.Scan(&userID, &created, &latency); err != nil {
+		if err := eventRows.Scan(&userID, &billingFree, &created, &latency); err != nil {
 			return nil, fmt.Errorf("store: 读取排行榜并发样本失败: %w", err)
 		}
-		if sample, ok := byUser[userID]; ok && latency >= 0 {
+		if sample, ok := byUser[leaderboardKey{userID: userID, billingFree: billingFree != 0}]; ok && latency >= 0 {
 			// 区间：开始 = created_at − latency（秒），结束 = created_at。
 			// latency_ms 换算成秒时向 0 截断（区间至少 1 秒），避免毫秒级请求
 			// 被算成"开始晚于结束"的空区间。
@@ -466,6 +475,14 @@ func (r *usageLogRepository) Leaderboard(ctx context.Context, q model.UsageLogQu
 		result = append(result, sample.entry)
 	}
 	return result, nil
+}
+
+// leaderboardKey 是排行榜聚合的键：(用户, 是否计费)。
+//
+// 之所以不能只用 user_id：同一用户在两榜各有一行，用单键会让两行互相覆盖。
+type leaderboardKey struct {
+	userID      uint64
+	billingFree bool
 }
 
 // usageEvent 是一次差分事件：某个时间点上并发数 +1（请求开始）或 −1（请求结束）。
@@ -698,6 +715,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		errMsg           string
 		requestID        string
 		priceVersion     string
+		billingFree      int
 		tag              string
 		createdAt        int64
 	)
@@ -706,7 +724,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		&promptTokens, &completionTokens, &totalTokens,
 		&cachedTokens, &reasoningTokens, &firstTokenMS, &tokensPerSecond,
 		&quota, &latencyMS,
-		&isStream, &statusCode, &errMsg, &requestID, &priceVersion, &tag, &createdAt); err != nil {
+		&isStream, &statusCode, &errMsg, &requestID, &priceVersion, &billingFree, &tag, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -735,6 +753,7 @@ func scanUsageLog(sc rowScanner) (*model.UsageLog, error) {
 		Error:            errMsg,
 		RequestID:        requestID,
 		PriceVersion:     priceVersion,
+		BillingFree:      billingFree != 0,
 		Tag:              tag,
 		CreatedAt:        time.Unix(createdAt, 0),
 	}, nil
