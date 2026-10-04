@@ -12,12 +12,16 @@
  *   新增门户接口：在此加函数 + 更新 types.ts。
  *   注意：创建令牌会返回一次性明文 key，函数返回类型必须是 CreateTokenResult。
  */
-import { api } from './client'
+import { api, UPSTREAM_TIMEOUT_MS } from './client'
 import type {
   AccessToken,
   AlertRecord,
   CostAttribution,
+  CreateGamePayload,
   CreateOrderPayload,
+  GameDetail,
+  GameMatch,
+  GameStepResult,
   CreateTokenPayload,
   CreateTokenResult,
   FinanceSummary,
@@ -220,4 +224,57 @@ export function updateUserKey(id: number, payload: UserKeyPayload): Promise<{ ke
 /** DELETE /api/user/keys/{id}：删除自备密钥（不可恢复，凭据本就在用户手里） */
 export function deleteUserKey(id: number): Promise<{ deleted: number }> {
   return api.delete<{ deleted: number }>(`/user/keys/${id}`)
+}
+
+/* ── 对弈演示 ─────────────────────────────────────────────────────── */
+
+/**
+ * POST /api/user/games：创建一局对局。
+ *
+ * 创建时不调用模型（因此不消耗额度），只建立对局与初始局面；
+ * 之后由前端循环调用 step 逐步推进。
+ */
+export function createGame(payload: CreateGamePayload): Promise<GameMatch> {
+  return api.post<GameMatch>('/user/games', payload)
+}
+
+/** GET /api/user/games：我的对局列表 */
+export function listGames(): Promise<{ matches: GameMatch[] }> {
+  return api.get<{ matches: GameMatch[] }>('/user/games')
+}
+
+/** GET /api/user/games/{id}：对局详情（含棋谱） */
+export function fetchGame(id: number): Promise<GameDetail> {
+  return api.get<GameDetail>(`/user/games/${id}`)
+}
+
+/**
+ * POST /api/user/games/{id}/step：推进一手。
+ *
+ * 轮到人类时 move 必填；轮到 AI 时不需要（后端会去调用模型）。
+ * 超时用的是 UPSTREAM 档：AI 走子要等上游模型返回，可能数十秒，
+ * 用默认 30 秒会让前端比后端先放弃（后端其实马上就会返回）。
+ */
+export function stepGame(id: number, move?: string): Promise<GameStepResult> {
+  return api.post<GameStepResult>(`/user/games/${id}/step`, move ? { move } : {}, {
+    timeout: UPSTREAM_TIMEOUT_MS,
+  })
+}
+
+/** DELETE /api/user/games/{id}：删除对局 */
+export function deleteGame(id: number): Promise<{ deleted: number }> {
+  return api.delete<{ deleted: number }>(`/user/games/${id}`)
+}
+
+/**
+ * 当前局面的图片地址（即模型看到的那一张）。
+ *
+ * 直接给 <img src> 用，因此返回 URL 而不是去 fetch 二进制——
+ * 图片需要带会话鉴权，而 <img> 不会带 Authorization，
+ * 所以这里走同源 Cookie 会话（门户接口支持会话 Cookie 鉴权）。
+ * 加时间戳参数是为了绕过浏览器缓存：局面每推进一手图就变了。
+ */
+export function gameBoardURL(id: number, version: number): string {
+  const base = process.env.NEXT_PUBLIC_API_BASE || '/api'
+  return `${base}/user/games/${id}/board.png?v=${version}`
 }

@@ -630,8 +630,14 @@ func (s *Server) handleGameBoard(c *gin.Context) {
 // ── 辅助函数 ────────────────────────────────────────────────
 
 // gameArena 返回对局驱动器（每次新建，开销可忽略：它只持有调用器与重试次数）。
+//
+// 调用器优先用注入的实现（测试或特殊部署），否则退化为基于转发引擎的默认实现。
 func (s *Server) gameArena() *game.Arena {
-	return game.NewArena(NewRelayModelCaller(s.deps.Relay), 0)
+	caller := s.deps.GameCaller
+	if caller == nil {
+		caller = NewRelayModelCaller(s.deps.Relay)
+	}
+	return game.NewArena(caller, s.deps.GameArenaAttempts)
 }
 
 // decodeGamePosition 从对局快照恢复局面。

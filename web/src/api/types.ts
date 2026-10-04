@@ -2083,3 +2083,101 @@ export interface AbuseEvent {
   threshold: number
   created_at: number
 }
+
+/* ── 对弈演示（多模态：棋盘以图片发给模型）────────────────────────── */
+
+/** 棋盘上的一手（对应后端 game.Move） */
+export interface GameMoveInput {
+  x?: number
+  y?: number
+  from?: { x: number; y: number }
+  to?: { x: number; y: number }
+  pass?: boolean
+  resign?: boolean
+}
+
+/** 棋子类型（象棋专用；1=兵类占位，2..8 为象棋各子） */
+export type GamePiece = number
+
+/** 局面快照（对应后端 game.Position） */
+export interface GamePosition {
+  kind: string
+  width: number
+  height: number
+  /** 行主序颜色格：0=空 1=黑 2=白 */
+  cells: number[]
+  /** 行主序类型格（象棋用；五子棋/围棋可缺省） */
+  pieces?: GamePiece[]
+  /** 下一手该谁走：1=黑 2=白 */
+  to_move: number
+  ko_point?: { x: number; y: number }
+  captured_black: number
+  captured_white: number
+  last_move?: GameMoveInput
+  consecutive_passes: number
+}
+
+/** 一局对局 */
+export interface GameMatch {
+  id: number
+  kind: string
+  kind_label: string
+  /** ai_vs_ai / human_vs_ai */
+  mode: string
+  mode_label: string
+  black_model: string
+  white_model: string
+  /** 0=无人类 1=黑 2=白 */
+  human_color: number
+  /** playing / black_win / white_win / draw / aborted */
+  status: string
+  status_text: string
+  winner: string
+  move_count: number
+  /** 下一步该谁走（0=已结束） */
+  to_move: number
+  /** 是否在等人落子（前端据此启用输入框） */
+  awaiting_human: boolean
+  error_text?: string
+  position?: GamePosition
+  created_at: number
+  updated_at: number
+}
+
+/** 棋谱里的一手 */
+export interface GameMoveRow {
+  seq: number
+  color: number
+  color_text: string
+  notation: string
+  /** 本手尝试次数；>1 说明模型试了多次才给出合法着法 */
+  attempts: number
+  raw?: string
+  error_text?: string
+}
+
+/** 对局详情 */
+export interface GameDetail {
+  match: GameMatch
+  moves: GameMoveRow[]
+}
+
+/** 推进一手的响应 */
+export interface GameStepResult {
+  match: GameMatch
+  moves: GameMoveRow[]
+  status?: string
+  over?: boolean
+  aborted?: boolean
+  error?: string
+  call_failed?: boolean
+}
+
+/** 创建对局的请求体 */
+export interface CreateGamePayload {
+  kind: string
+  mode: string
+  black_model?: string
+  white_model?: string
+  human_color?: number
+}

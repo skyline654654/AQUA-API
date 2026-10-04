@@ -36,6 +36,7 @@ import (
 	"github.com/xiaosu4610/aqua-api/internal/broadcast"
 	"github.com/xiaosu4610/aqua-api/internal/config"
 	"github.com/xiaosu4610/aqua-api/internal/corpus"
+	"github.com/xiaosu4610/aqua-api/internal/game"
 	"github.com/xiaosu4610/aqua-api/internal/mailer"
 	"github.com/xiaosu4610/aqua-api/internal/model"
 	"github.com/xiaosu4610/aqua-api/internal/payment"
@@ -118,6 +119,15 @@ type Deps struct {
 	// （每手一次模型调用），因此必须持久化——刷新页面、断线后能续上，
 	// 棋谱也是演示的产物本身（模型哪一手走错了正是用户想看的结论）。
 	GameMatches model.GameMatchRepository
+	// GameCaller 是对弈用的模型调用器；为 nil 时使用基于转发引擎的默认实现。
+	//
+	// 之所以留成可注入：默认实现要求库里有可用渠道且会真的花钱调模型，
+	// 而"创建对局 → 人类落子 → AI 应手 → 读取棋谱"这条链路本身
+	// 与模型无关（只有 AI 那一步需要）。注入桩之后整条链路可以在
+	// 进程内完整验证，不必依赖真实上游。
+	GameCaller game.ModelCaller
+	// GameArenaAttempts 是对弈每手的最多重试次数；<=0 用默认值。
+	GameArenaAttempts int
 
 	// EmailCodes 是注册邮箱验证码仓储（由 main 注入；验证码相关接口依赖它）。
 	EmailCodes model.EmailCodeRepository

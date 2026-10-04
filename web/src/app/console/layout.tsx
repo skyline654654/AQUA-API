@@ -27,6 +27,9 @@ const GROUPS: ShellNavGroup[] = [
       { label: '访问令牌', href: '/console/tokens', icon: 'key' },
       { label: '接入示例', href: '/console/docs', icon: 'book' },
       { label: '游乐场', href: '/console/playground', icon: 'play' },
+      // 对弈放在"接入"组而不是新开一组：它与游乐场同类——
+      // 都是"把站内模型拉出来实际跑一遍"的体验入口，放一起才好找。
+      { label: 'AI 对弈', href: '/console/arena', icon: 'grid' },
     ],
   },
   {
